@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { applyIdentityOverrides, applyThreadIdentityOverrides, type Thread } from "./collector";
 import {
   contactWritesEnabled,
+  contactMutationOnMac,
   identityKey,
   identityNameFor,
   MAX_BRIDGE_CONFIG_BYTES,
@@ -20,6 +21,7 @@ import {
   MAX_IDENTITY_REQUEST_BYTES,
   normalizeBridgeCandidates,
   normalizeContactComparison,
+  normalizeContactDraft,
   normalizeIdentityConfig,
   normalizeRepairPreview,
   parseIdentities,
@@ -295,7 +297,7 @@ describe("Mac candidate boundary", () => {
       handle: "+15550100001", name: "Alex Rivera", cardCount: 2,
       sourceCount: 2, writeEnabled: true,
       cards: [1, 2].map((number) => ({
-        token: cardToken(number === 1 ? "b" : "c"), cardNumber: number,
+        token: cardToken(number === 1 ? "b" : "c"), revision: cardToken(number === 1 ? "d" : "e"), cardNumber: number,
         accountNumber: number, hasPhoto: number === 1,
         displayName: "Alex Rivera", firstName: "Alex", middleName: "", lastName: "Rivera",
         nickname: "", organization: "Example", department: "", jobTitle: "",
@@ -328,7 +330,7 @@ describe("Mac candidate boundary", () => {
       handle: "+15550100001", name: "Alex Rivera", cardCount: 2,
       sourceCount: 2, writeEnabled: true,
       cards: [1, 2].map((number) => ({
-        token: cardToken(number === 1 ? "b" : "c"), cardNumber: number,
+        token: cardToken(number === 1 ? "b" : "c"), revision: cardToken(number === 1 ? "d" : "e"), cardNumber: number,
         accountNumber: number, hasPhoto: false, displayName: "Alex Rivera",
         firstName: "Alex", middleName: "", lastName: "Rivera", nickname: "",
         organization: "", department: "", jobTitle: "", birthday: "", note: "",
@@ -371,6 +373,42 @@ describe("Mac candidate boundary", () => {
     )).toThrow("confirmed Contacts action");
   });
 
+  test("contact edits are bounded, revision-pinned, previewed, and confirmed", () => {
+    const exactToken = cardToken("b");
+    const revision = cardToken("c");
+    const planHash = cardToken("d");
+    const draft = normalizeContactDraft({
+      firstName: "Alex", middleName: "", lastName: "Rivera", nickname: "Lex",
+      organization: "Example", department: "", jobTitle: "", birthday: "--09-02",
+      note: "", phones: [{ label: "mobile", value: "+1 555 010 0001" }],
+      emails: [], urls: [], addresses: [],
+    });
+    const metadata = {
+      action: "edit", handle: "+15550100001", name: "Alex Rivera", cardNumber: 1,
+      cardCount: 2, accountNumber: 1, sourceCardCount: 0,
+      changedFields: ["nickname"], planHash, writeEnabled: true,
+    };
+    const captured: string[] = [];
+    const responses = [
+      { ok: true, preview: metadata },
+      { ok: true, ...metadata, applied: true, undoToken: "undo:" + "f".repeat(32),
+        revision: cardToken("e"), displayName: "Alex Rivera" },
+    ];
+    const runner = ((_command: string, args: string[], options: any) => {
+      expect(args).toEqual(["--json", "resolve"]);
+      captured.push(options.input);
+      return { status: 0, signal: null, output: [], pid: 1,
+        stdout: JSON.stringify(responses.shift()), stderr: "", error: undefined };
+    }) as any;
+    const input = { handle: metadata.handle, ownerToken: token, token: exactToken, revision, card: draft };
+    expect(contactMutationOnMac("edit-prepare", input, runner).preview?.action).toBe("edit");
+    expect(contactMutationOnMac("edit", { ...input, planHash }, runner).result?.applied).toBe(true);
+    expect(JSON.parse(captured[0]!)).toEqual({ operation: "edit-prepare", ...input });
+    expect(JSON.parse(captured[1]!)).toEqual({ operation: "edit", ...input, planHash });
+    expect(() => contactMutationOnMac("edit", { ...input, planHash: "sha256:bad" }, runner))
+      .toThrow("revision");
+  });
+
   test("inspect, removal, and undo keep contact data on stdin and validate receipts", () => {
     const exactToken = cardToken("e");
     const undoToken = "undo:" + "f".repeat(32);
@@ -384,7 +422,7 @@ describe("Mac candidate boundary", () => {
       { ok: true, preview },
       { ok: true, ...preview, removed: true, undoToken },
       { ok: true, restored: true, alreadyPresent: false, handle: preview.handle,
-        name: preview.name, fieldCount: 1 },
+        name: preview.name, action: "field-removal", cardCount: 1, fieldCount: 1 },
     ];
     const runner = ((_command: string, args: string[], options: any) => {
       captured.push({ args, input: options.input });

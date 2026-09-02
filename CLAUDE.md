@@ -108,8 +108,14 @@ what it is handed. Keep it that way.
   both sides of ssh and carry the handle via stdin. Candidate selection does
   not write; the UI has a separately labeled Blip-only save. Mac review uses
   opaque per-card tokens to open an exact validated `addressbook://` record in
-  Contacts.app. Read-only comparison returns bounded selected-card fields with
-  raw ids retained on the Mac. Gated repair can remove an exact revalidated
+  Contacts.app. Card comparison returns bounded selected-card fields and opaque
+  content revisions with raw ids retained on the Mac. Full-card edits,
+  deletions, and consolidations require a hashed preview, revalidate every
+  exact revision at apply time, and write a private bounded undo receipt before
+  Contacts.app saves. Edits preserve the target photo; deletion and
+  consolidation receipts cannot guarantee restored account placement, links,
+  or photos, so the destructive confirmation must keep saying so. Gated narrow
+  repair can remove an exact revalidated
   phone/email with confirmation and an undo receipt. Gated linking uses only
   Contacts' allowlisted enabled menu action, pins the previewed action through
   execution, and requires another confirmation. Blip never edits the private

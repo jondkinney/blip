@@ -52,10 +52,14 @@ Two permissions must be granted by hand (macOS will not let a script do it):
      THIS Mac's screen: "sshd-keygen-wrapper wants to control Messages" — click
      Allow once. (blip-setup triggers this with a dry-run-free self-send.)
 
-Optional contact comparison, repair, and linking also need Automation →
+Optional contact comparison, editing, deletion, consolidation, repair, and linking need Automation →
 Contacts for sshd-keygen-wrapper. Blip requests it only when you explicitly
 open those tools; contact writes additionally require both contact_writes=on
 on Linux and the owner-only ~/.blip/contact-writes-enabled gate on this Mac.
+
+Blip previews and revision-pins each card mutation. It writes an owner-only
+undo receipt before saving through Contacts.app and never writes Contacts'
+private SQLite databases directly.
 
 Linking or merging exact cards from Blip additionally uses System Events and
 requires sshd-keygen-wrapper under Privacy & Security → Accessibility. Blip

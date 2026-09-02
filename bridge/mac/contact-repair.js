@@ -9,7 +9,7 @@
  */
 ObjC.import("Foundation");
 
-const MAX_INPUT_BYTES = 16 * 1024;
+const MAX_INPUT_BYTES = 48 * 1024;
 const MAX_OUTPUT_BYTES = 48 * 1024;
 const MAX_FIELDS = 8;
 const MAX_PERSON_IDS = 64;
@@ -49,7 +49,10 @@ function readRequest() {
 function normalizeRequest(value) {
   const operation = value.operation === "available" || value.operation === "describe"
     || value.operation === "inspect" || value.operation === "remove"
-    || value.operation === "undo" ? value.operation : "";
+    || value.operation === "undo" || value.operation === "edit"
+    || value.operation === "delete" || value.operation === "restore"
+    || value.operation === "consolidate" || value.operation === "undo-consolidate"
+    ? value.operation : "";
   if (!operation) throw new Error("repair operation is invalid");
   if (operation === "available") {
     if (!Array.isArray(value.personUids) || value.personUids.length < 1
@@ -76,6 +79,55 @@ function normalizeRequest(value) {
       return normalized;
     });
     return { operation: operation, personUids: personUids };
+  }
+  if (operation === "restore") {
+    return { operation: operation, card: normalizeCard(value.card, false) };
+  }
+  if (operation === "undo-consolidate") {
+    const targetUid = boundedString(value.targetUid, "target person id", 200);
+    if (!Array.isArray(value.restoreCards) || value.restoreCards.length < 1
+        || value.restoreCards.length >= MAX_COMPARE_CARDS)
+      throw new Error("restore card list is invalid");
+    return {
+      operation: operation,
+      targetUid: targetUid,
+      expectedCard: normalizeCard(value.expectedCard, true),
+      card: normalizeCard(value.card, false),
+      restoreCards: value.restoreCards.map(function(card) { return normalizeCard(card, false); })
+    };
+  }
+  if (operation === "consolidate") {
+    const targetUid = boundedString(value.targetUid, "target person id", 200);
+    if (!Array.isArray(value.sourceUids) || value.sourceUids.length < 1
+        || value.sourceUids.length >= MAX_COMPARE_CARDS)
+      throw new Error("source person id list is invalid");
+    if (!Array.isArray(value.expectedCards)
+        || value.expectedCards.length !== value.sourceUids.length + 1)
+      throw new Error("expected card list is invalid");
+    const sourceUids = value.sourceUids.map(function(uid) {
+      const normalized = boundedString(uid, "source person id", 200);
+      if (normalized === targetUid) throw new Error("target cannot also be a source card");
+      return normalized;
+    });
+    if (new Set(sourceUids).size !== sourceUids.length)
+      throw new Error("source person id list contains a duplicate");
+    const request = {
+      operation: operation,
+      targetUid: targetUid,
+      sourceUids: sourceUids,
+      expectedCards: value.expectedCards.map(function(card) { return normalizeCard(card, true); }),
+      card: normalizeCard(value.card, false)
+    };
+    return request;
+  }
+  if (operation === "edit" || operation === "delete") {
+    const request = {
+      operation: operation,
+      personUid: boundedString(value.personUid, "person id", 200),
+      expectedCard: normalizeCard(value.expectedCard, true)
+    };
+    if (operation === "edit") request.card = normalizeCard(value.card, false);
+    return request;
   }
   const uid = boundedString(value.personUid, "person id", 200);
   const kind = value.kind === "phone" || value.kind === "email" ? value.kind : "";
@@ -143,6 +195,70 @@ function optionalString(value, label, maximum) {
   if (typeof value !== "string") throw new Error(label + " is invalid");
   if (value.length > maximum) throw new Error(label + " is too long");
   return value.replace(UNSAFE, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLabeledInput(value, label) {
+  if (!Array.isArray(value) || value.length > MAX_VALUES_PER_KIND)
+    throw new Error(label + " list is invalid");
+  return value.map(function(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new Error(label + " is invalid");
+    const item = {
+      label: optionalString(entry.label, label + " label", 80),
+      value: optionalString(entry.value, label + " value", 320)
+    };
+    if (!item.value) throw new Error(label + " value is empty");
+    return item;
+  });
+}
+
+function normalizeAddressInput(value) {
+  if (!Array.isArray(value) || value.length > MAX_VALUES_PER_KIND)
+    throw new Error("address list is invalid");
+  return value.map(function(entry) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new Error("address is invalid");
+    const address = {
+      label: optionalString(entry.label, "address label", 80),
+      street: optionalString(entry.street, "street", 320),
+      city: optionalString(entry.city, "city", 320),
+      state: optionalString(entry.state, "state", 320),
+      postalCode: optionalString(entry.postalCode, "postal code", 80),
+      country: optionalString(entry.country, "country", 160),
+      countryCode: optionalString(entry.countryCode, "country code", 8)
+    };
+    if (!address.street && !address.city && !address.state && !address.postalCode && !address.country)
+      throw new Error("address is empty");
+    return address;
+  });
+}
+
+function normalizeCard(value, includeDisplayName) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("contact card is invalid");
+  const birthday = optionalString(value.birthday, "birthday", 10);
+  if (birthday && !/^(?:\d{4}\-|--)\d{2}\-\d{2}$/.test(birthday))
+    throw new Error("birthday is invalid");
+  const card = {
+    firstName: optionalString(value.firstName, "first name", 160),
+    middleName: optionalString(value.middleName, "middle name", 160),
+    lastName: optionalString(value.lastName, "last name", 160),
+    nickname: optionalString(value.nickname, "nickname", 160),
+    organization: optionalString(value.organization, "organization", 320),
+    department: optionalString(value.department, "department", 320),
+    jobTitle: optionalString(value.jobTitle, "job title", 320),
+    birthday: birthday,
+    note: optionalString(value.note, "note", 1000),
+    phones: normalizeLabeledInput(value.phones, "phone"),
+    emails: normalizeLabeledInput(value.emails, "email"),
+    urls: normalizeLabeledInput(value.urls, "URL"),
+    addresses: normalizeAddressInput(value.addresses)
+  };
+  if (!card.firstName && !card.lastName && !card.nickname && !card.organization)
+    throw new Error("contact card needs a name, nickname, or organization");
+  if (includeDisplayName)
+    card.displayName = optionalString(value.displayName, "display name", 160);
+  return card;
 }
 
 function personString(person, property, label, maximum) {
@@ -220,6 +336,67 @@ function describePerson(person) {
   };
 }
 
+function sameCard(person, expected) {
+  const actual = describePerson(person);
+  const keys = ["displayName", "firstName", "middleName", "lastName", "nickname",
+    "organization", "department", "jobTitle", "birthday", "note", "phones",
+    "emails", "urls", "addresses"];
+  for (let i = 0; i < keys.length; i++) {
+    if (JSON.stringify(actual[keys[i]]) !== JSON.stringify(expected[keys[i]])) return false;
+  }
+  return true;
+}
+
+function removeAll(contacts, person, property) {
+  const entries = person[property]();
+  for (let i = entries.length - 1; i >= 0; i--)
+    contacts.remove(entries[i], { from: person });
+}
+
+function birthdayDate(value) {
+  if (!value) return null;
+  const yearless = value.slice(0, 2) === "--";
+  const year = yearless ? 1604 : Number(value.slice(0, 4));
+  const month = Number(value.slice(yearless ? 2 : 5, yearless ? 4 : 7));
+  const day = Number(value.slice(yearless ? 5 : 8, yearless ? 7 : 10));
+  const date = new Date(year, month - 1, day, 12, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day)
+    throw new Error("birthday is invalid");
+  return date;
+}
+
+function setCard(contacts, person, card) {
+  const scalar = ["firstName", "middleName", "lastName", "nickname", "organization",
+    "department", "jobTitle", "note"];
+  for (let i = 0; i < scalar.length; i++) person[scalar[i]].set(card[scalar[i]]);
+  person.birthDate.set(birthdayDate(card.birthday));
+  removeAll(contacts, person, "phones");
+  removeAll(contacts, person, "emails");
+  removeAll(contacts, person, "urls");
+  removeAll(contacts, person, "addresses");
+  for (let i = 0; i < card.phones.length; i++) addField(contacts, person, "phone", card.phones[i]);
+  for (let i = 0; i < card.emails.length; i++) addField(contacts, person, "email", card.emails[i]);
+  for (let i = 0; i < card.urls.length; i++) {
+    const properties = { value: card.urls[i].value };
+    if (card.urls[i].label) properties.label = card.urls[i].label;
+    contacts.add(contacts.Url(properties), { to: person });
+  }
+  for (let i = 0; i < card.addresses.length; i++) {
+    const source = card.addresses[i];
+    const properties = { street: source.street, city: source.city, state: source.state,
+      zip: source.postalCode, country: source.country, countryCode: source.countryCode };
+    if (source.label) properties.label = source.label;
+    contacts.add(contacts.Address(properties), { to: person });
+  }
+}
+
+function createPerson(contacts, card) {
+  const person = contacts.Person({ firstName: card.firstName });
+  contacts.people.push(person);
+  setCard(contacts, person, card);
+  return person;
+}
+
 function sameFieldSet(actual, expected) {
   if (actual.length !== expected.length) return false;
   const left = actual.map(function(field) { return field.id; }).sort();
@@ -258,6 +435,70 @@ function perform(request) {
       return describePerson(peopleForId(Contacts, uid));
     });
     return { ok: true, cards: cards };
+  }
+  if (request.operation === "restore") {
+    if (Contacts.unsaved())
+      throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+    const restored = createPerson(Contacts, request.card);
+    Contacts.save();
+    return { ok: true, restored: true, card: describePerson(restored) };
+  }
+  if (request.operation === "undo-consolidate") {
+    const target = peopleForId(Contacts, request.targetUid);
+    if (!sameCard(target, request.expectedCard))
+      throw new Error("the merged card changed; refresh before undoing");
+    if (Contacts.unsaved())
+      throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+    setCard(Contacts, target, request.card);
+    for (let i = 0; i < request.restoreCards.length; i++) createPerson(Contacts, request.restoreCards[i]);
+    Contacts.save();
+    return { ok: true, restored: true, card: describePerson(target),
+      sourceCount: request.restoreCards.length };
+  }
+  if (request.operation === "consolidate") {
+    const target = peopleForId(Contacts, request.targetUid);
+    const sources = request.sourceUids.map(function(uid) { return peopleForId(Contacts, uid); });
+    const people = [target].concat(sources);
+    for (let i = 0; i < people.length; i++) {
+      if (!sameCard(people[i], request.expectedCards[i]))
+        throw new Error("a selected card changed; refresh before merging");
+    }
+    if (Contacts.unsaved())
+      throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+    const targetBefore = describePerson(target);
+    try {
+      setCard(Contacts, target, request.card);
+      for (let i = sources.length - 1; i >= 0; i--) Contacts.delete(sources[i]);
+      Contacts.save();
+    } catch (error) {
+      try { setCard(Contacts, target, targetBefore); Contacts.save(); } catch (_) { /* original error wins */ }
+      throw error;
+    }
+    if (!sameCard(target, Object.assign({ displayName: describePerson(target).displayName }, request.card)))
+      throw new Error("Contacts did not save the merged target card");
+    return { ok: true, consolidated: true, card: describePerson(target), sourceCount: sources.length };
+  }
+  if (request.operation === "edit" || request.operation === "delete") {
+    const editable = peopleForId(Contacts, request.personUid);
+    if (!sameCard(editable, request.expectedCard))
+      throw new Error("the selected card changed; refresh before saving");
+    if (Contacts.unsaved())
+      throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+    if (request.operation === "delete") {
+      Contacts.delete(editable);
+      Contacts.save();
+      let remains = false;
+      try { peopleForId(Contacts, request.personUid); remains = true; } catch (_) { remains = false; }
+      if (remains) throw new Error("Contacts did not delete the selected card");
+      return { ok: true, deleted: true };
+    }
+    const before = describePerson(editable);
+    try { setCard(Contacts, editable, request.card); Contacts.save(); }
+    catch (error) {
+      try { setCard(Contacts, editable, before); Contacts.save(); } catch (_) { /* original error wins */ }
+      throw error;
+    }
+    return { ok: true, edited: true, card: describePerson(editable) };
   }
   const person = peopleForId(Contacts, request.personUid);
   const current = matchingFields(person, request.kind, request.key);

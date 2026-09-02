@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Layouts
 import qs.Commons
 
-// A read-only local comparison of the exact active Contacts cards selected by
-// the bridge. Linking remains a separate, explicit action in Contacts.app.
+// Local comparison and revision-pinned management of the exact active
+// Contacts cards selected by the bridge. Apple's link action remains separate.
 ColumnLayout {
   id: root
 
@@ -18,11 +18,16 @@ ColumnLayout {
   property real cornerScale: 1.0
   property bool combinedExpanded: false
   property bool showSharedFields: false
+  property var editorCard: null
+  property var editorInitialCard: null
+  property string editorMode: "edit"
   readonly property int sharedCount: sharedRowCount(comparison)
 
   onComparisonChanged: {
     showSharedFields = false
     combinedExpanded = false
+    editorCard = null
+    editorInitialCard = null
   }
 
   spacing: space(18)
@@ -152,8 +157,84 @@ ColumnLayout {
     for (var i = 0; i < value.cards.length; i++) if (missingFields(value.cards[i]).length > 0) count++
     return count
   }
+  function cloneList(value) {
+    return JSON.parse(JSON.stringify(Array.isArray(value) ? value : []))
+  }
+  function uniqueList(cards, property, address) {
+    var result = []
+    var seen = ({})
+    for (var i = 0; i < cards.length; i++) {
+      var values = cards[i] && Array.isArray(cards[i][property]) ? cards[i][property] : []
+      for (var j = 0; j < values.length; j++) {
+        var item = values[j]
+        var key = address
+          ? [item.street, item.city, item.state, item.postalCode, item.country, item.countryCode]
+            .join("\u0000").toLowerCase()
+          : String(item.value || "").toLowerCase()
+        if (key === "" || seen[key]) continue
+        seen[key] = true
+        result.push(JSON.parse(JSON.stringify(item)))
+      }
+    }
+    return result
+  }
+  function mergedDraft(target) {
+    var cards = comparison && Array.isArray(comparison.cards) ? comparison.cards : []
+    var draft = ({})
+    var scalars = ["firstName", "middleName", "lastName", "nickname", "organization",
+      "department", "jobTitle", "birthday", "note"]
+    for (var i = 0; i < scalars.length; i++) {
+      var key = scalars[i]
+      draft[key] = String(target && target[key] || "")
+      if (draft[key] !== "") continue
+      for (var j = 0; j < cards.length; j++) {
+        var candidate = String(cards[j] && cards[j][key] || "")
+        if (candidate !== "") { draft[key] = candidate; break }
+      }
+    }
+    draft.phones = uniqueList(cards, "phones", false)
+    draft.emails = uniqueList(cards, "emails", false)
+    draft.urls = uniqueList(cards, "urls", false)
+    draft.addresses = uniqueList(cards, "addresses", true)
+    return draft
+  }
+  function editCard(card) {
+    if (resolver) resolver.cancelMutation()
+    editorMode = "edit"
+    editorCard = card
+    editorInitialCard = card
+  }
+  function mergeInto(card) {
+    if (resolver) resolver.cancelMutation()
+    editorMode = "consolidate"
+    editorCard = card
+    editorInitialCard = mergedDraft(card)
+  }
+
+  ContactCardEditor {
+    Layout.fillWidth: true
+    visible: root.editorCard !== null
+    resolver: root.resolver
+    card: root.editorCard
+    comparison: root.comparison
+    initialCard: root.editorInitialCard
+    mode: root.editorMode
+    foreground: root.foreground
+    urgent: root.urgent
+    accent: root.accent
+    fontFamily: root.fontFamily
+    fontScale: root.fontScale
+    density: root.density
+    cornerScale: root.cornerScale
+    onCloseRequested: {
+      root.editorCard = null
+      root.editorInitialCard = null
+      root.editorMode = "edit"
+    }
+  }
 
   RowLayout {
+    visible: root.editorCard === null
     Layout.fillWidth: true
     spacing: root.space(10)
     ColumnLayout {
@@ -194,6 +275,7 @@ ColumnLayout {
   }
 
   StageHeader {
+    visible: root.editorCard === null
     step: "1"
     title: "Compare"
     detail: root.showSharedFields || root.sharedCount === 0
@@ -203,6 +285,7 @@ ColumnLayout {
   }
 
   RowLayout {
+    visible: root.editorCard === null
     Layout.fillWidth: true
     spacing: root.space(8)
     Text {
@@ -222,6 +305,7 @@ ColumnLayout {
   }
 
   GridLayout {
+    visible: root.editorCard === null
     Layout.fillWidth: true
     columns: root.width >= root.space(820) && root.comparison && root.comparison.cardCount === 2 ? 2 : 1
     columnSpacing: root.space(12)
@@ -277,7 +361,13 @@ ColumnLayout {
               font.pixelSize: root.fontSize(Style.font.caption)
             }
             SmallButton {
-              label: "Open & edit on Mac…"
+              label: "Edit in Blip…"
+              primary: true
+              enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
+              onClicked: root.editCard(cardBox.modelData)
+            }
+            SmallButton {
+              label: "Open on Mac…"
               enabled: root.resolver && !root.resolver.loading
               onClicked: root.resolver.openOnMac(root.comparison.handle, cardBox.modelData.token)
             }
@@ -332,16 +422,17 @@ ColumnLayout {
   }
 
   StageHeader {
+    visible: root.editorCard === null
     step: "2"
-    title: "Complete"
+    title: "Consolidate"
     detail: root.incompleteCardCount(root.comparison) === 0
-      ? "Both source cards have their core details."
-      : "Open a source card above to fill its missing details in Contacts, then refresh here."
+      ? "Build one editable card from the discovered values, then choose which account keeps it."
+      : "The merged draft fills blanks and combines unique values; review every field before saving."
   }
 
   Rectangle {
+    visible: root.editorCard === null && root.comparison !== null
     Layout.fillWidth: true
-    visible: root.comparison !== null
     implicitHeight: combinedContents.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))
     color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.065)
@@ -410,16 +501,41 @@ ColumnLayout {
           }
         }
       }
+      RowLayout {
+        Layout.fillWidth: true
+        visible: root.comparison && root.comparison.cardCount > 1
+        spacing: root.space(8)
+        Text {
+          Layout.fillWidth: true
+          text: "Choose the source card—and therefore the contact account—that should remain."
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: Qt.darker(root.foreground, 1.35)
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+        }
+        Repeater {
+          model: root.comparison ? root.comparison.cards : []
+          delegate: SmallButton {
+            required property var modelData
+            label: "Merge into card " + modelData.cardNumber + "…"
+            enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
+            onClicked: root.mergeInto(modelData)
+          }
+        }
+      }
     }
   }
 
   StageHeader {
+    visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
     step: "3"
     title: "Link"
     detail: "Ask Contacts whether it can link these exact source cards. Checking makes no changes."
   }
 
   Rectangle {
+    visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
     Layout.fillWidth: true
     implicitHeight: linkContents.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))
@@ -515,9 +631,9 @@ ColumnLayout {
   }
 
   Text {
+    visible: root.editorCard === null && root.resolver && !root.resolver.contactWrites
     Layout.fillWidth: true
-    visible: root.resolver && !root.resolver.contactWrites
-    text: "Linking is disabled by the local and Mac write gates. Comparing and opening exact cards remain read-only."
+    text: "Editing, deleting, consolidating, and linking are disabled by the local and Mac write gates. Viewing and opening exact cards remain read-only."
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: Qt.darker(root.foreground, 1.35)

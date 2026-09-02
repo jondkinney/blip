@@ -20,6 +20,8 @@ Item {
   property var repairPreview: null
   property var comparison: null
   property var linkPreview: null
+  property var mutationPreview: null
+  property var mutationRequest: null
   property string comparisonOwnerToken: ""
   property string activeHandle: ""
   property bool contactWrites: false
@@ -29,6 +31,8 @@ Item {
   property string undoHandle: ""
   property string undoName: ""
   property int undoFieldCount: 0
+  property string undoAction: ""
+  property int undoCardCount: 0
   property bool loaded: false
   property bool loading: false
   property string error: ""
@@ -55,6 +59,10 @@ Item {
   }
 
   function validToken(value) {
+    return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value)
+  }
+
+  function validRevision(value) {
     return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value)
   }
 
@@ -193,7 +201,9 @@ Item {
     var scalarKeys = ["displayName", "firstName", "middleName", "lastName", "nickname",
       "organization", "department", "jobTitle", "birthday", "note"]
     var scalarLimits = [160, 160, 160, 160, 160, 320, 320, 320, 10, 1000]
-    var card = ({ token: value.token, cardNumber: cardNumber, accountNumber: accountNumber,
+    if (!validRevision(value.revision)) return null
+    var card = ({ token: value.token, revision: value.revision,
+      cardNumber: cardNumber, accountNumber: accountNumber,
       hasPhoto: value.hasPhoto === true })
     seenTokens[value.token] = true
     for (var i = 0; i < scalarKeys.length; i++) {
@@ -217,7 +227,7 @@ Item {
     var name = safeText(value.name, 160)
     var cardCount = Number(value.cardCount)
     var sourceCount = Number(value.sourceCount)
-    if (handle === "" || name === "" || !Number.isInteger(cardCount) || cardCount < 2 || cardCount > 8
+    if (handle === "" || name === "" || !Number.isInteger(cardCount) || cardCount < 1 || cardCount > 8
         || !Number.isInteger(sourceCount) || sourceCount < 1 || sourceCount > 8
         || !Array.isArray(value.cards) || value.cards.length !== cardCount) return null
     var seen = ({})
@@ -232,6 +242,40 @@ Item {
     if (Object.keys(accounts).length !== sourceCount) return null
     return { handle: handle, name: name, cardCount: cardCount, sourceCount: sourceCount,
       writeEnabled: value.writeEnabled === true, cards: cards, ownerToken: comparisonOwnerToken }
+  }
+
+
+  function safeMutationPreview(value, requireApplied) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null
+    var action = ["edit", "delete", "consolidate"].indexOf(value.action) >= 0 ? value.action : ""
+    var handle = safeText(value.handle, 320)
+    var name = safeText(value.name, 160)
+    var cardNumber = Number(value.cardNumber)
+    var cardCount = Number(value.cardCount)
+    var accountNumber = Number(value.accountNumber)
+    var sourceCardCount = Number(value.sourceCardCount)
+    if (action === "" || handle === "" || name === "" || !validRevision(value.planHash)
+        || !Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > 8
+        || !Number.isInteger(cardCount) || cardCount < cardNumber || cardCount > 8
+        || !Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > 64
+        || !Number.isInteger(sourceCardCount) || sourceCardCount < 0 || sourceCardCount > 7
+        || !Array.isArray(value.changedFields) || value.changedFields.length < 1
+        || value.changedFields.length > 13) return null
+    var changed = []
+    for (var i = 0; i < value.changedFields.length; i++) {
+      var field = safeText(value.changedFields[i], 40)
+      if (field === "") return null
+      changed.push(field)
+    }
+    if (requireApplied === true && (value.applied !== true
+        || !/^undo:[0-9a-f]{32}$/.test(String(value.undoToken || "")))) return null
+    if (requireApplied === true && action !== "delete"
+        && (!validRevision(value.revision) || safeText(value.displayName, 160) === "")) return null
+    return { action: action, handle: handle, name: name, cardNumber: cardNumber,
+      cardCount: cardCount, accountNumber: accountNumber, sourceCardCount: sourceCardCount,
+      changedFields: changed, planHash: value.planHash, writeEnabled: value.writeEnabled === true,
+      applied: value.applied === true, undoToken: String(value.undoToken || ""),
+      revision: String(value.revision || ""), displayName: safeText(value.displayName || "", 160) }
   }
 
   function safeLinkPreview(value, requireLinked) {
@@ -301,6 +345,8 @@ Item {
     repairPreview = null
     comparison = null
     linkPreview = null
+    mutationPreview = null
+    mutationRequest = null
     comparisonOwnerToken = ""
     pendingRepairToken = ""
     pendingOwnerToken = ""
@@ -315,6 +361,8 @@ Item {
     repairPreview = null
     comparison = null
     linkPreview = null
+    mutationPreview = null
+    mutationRequest = null
     comparisonOwnerToken = ""
     pendingRepairToken = ""
     pendingOwnerToken = ""
@@ -347,9 +395,70 @@ Item {
     if (!validToken(ownerToken)) return false
     comparison = null
     linkPreview = null
+    mutationPreview = null
+    mutationRequest = null
     comparisonOwnerToken = ownerToken
     notice = "Loading the active card details from Contacts…"
     return start("compare", { handle: handle, ownerToken: ownerToken })
+  }
+
+  function prepareCardEdit(card, draft) {
+    if (!contactWrites || !comparison || !card || !validToken(card.token)
+        || !validRevision(card.revision) || !validToken(comparison.ownerToken)) return false
+    mutationPreview = null
+    mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
+      token: card.token, revision: card.revision, card: draft }
+    notice = "Verifying this contact edit on the Mac…"
+    return start("edit-prepare", mutationRequest)
+  }
+
+  function prepareCardDelete(card) {
+    if (!contactWrites || !comparison || !card || !validToken(card.token)
+        || !validRevision(card.revision) || !validToken(comparison.ownerToken)) return false
+    mutationPreview = null
+    mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
+      token: card.token, revision: card.revision }
+    notice = "Verifying this source-card deletion on the Mac…"
+    return start("delete-prepare", mutationRequest)
+  }
+
+  function prepareConsolidation(targetCard, draft) {
+    if (!contactWrites || !comparison || comparison.cards.length < 2 || !targetCard
+        || !validToken(targetCard.token) || !validToken(comparison.ownerToken)) return false
+    var revisions = []
+    for (var i = 0; i < comparison.cards.length; i++) {
+      var card = comparison.cards[i]
+      if (!validToken(card.token) || !validRevision(card.revision)) return false
+      revisions.push({ token: card.token, revision: card.revision })
+    }
+    mutationPreview = null
+    mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
+      targetToken: targetCard.token, revisions: revisions, card: draft }
+    notice = "Verifying the merged card and every source card on the Mac…"
+    return start("merge-prepare", mutationRequest)
+  }
+
+  function applyMutation() {
+    if (!contactWrites || !mutationPreview || !mutationPreview.writeEnabled || !mutationRequest
+        || !validRevision(mutationPreview.planHash)) return false
+    var operation = mutationPreview.action === "edit" ? "edit"
+      : mutationPreview.action === "delete" ? "delete" : "merge"
+    var request = ({})
+    var keys = Object.keys(mutationRequest)
+    for (var i = 0; i < keys.length; i++) request[keys[i]] = mutationRequest[keys[i]]
+    request.planHash = mutationPreview.planHash
+    notice = operation === "edit" ? "Saving the verified contact edit…"
+      : operation === "delete" ? "Deleting the verified source card…"
+      : "Consolidating the verified source cards…"
+    return start(operation, request)
+  }
+
+  function cancelMutation() {
+    if (worker.running) return false
+    mutationPreview = null
+    mutationRequest = null
+    notice = "No Contacts data was changed"
+    return true
   }
 
   function prepareLink() {
@@ -381,6 +490,8 @@ Item {
     if (worker.running) return false
     comparison = null
     linkPreview = null
+    mutationPreview = null
+    mutationRequest = null
     comparisonOwnerToken = ""
     notice = candidates.length > 1 ? "Contacts has conflicting names" : "Contacts has one matching name"
     return true
@@ -418,7 +529,7 @@ Item {
 
   function undoOnMac() {
     if (!contactWrites || !/^undo:[0-9a-f]{32}$/.test(undoToken)) return false
-    notice = "Restoring the removed field in Mac Contacts…"
+    notice = "Undoing the last Blip contact change…"
     return start("undo", { undoToken: undoToken })
   }
 
@@ -526,6 +637,49 @@ Item {
       notice = "Loaded " + compared.cardCount + " active cards for comparison; nothing was changed"
       return
     }
+    if (currentOperation === "edit-prepare" || currentOperation === "delete-prepare"
+        || currentOperation === "merge-prepare") {
+      var mutation = safeMutationPreview(result.preview, false)
+      var expectedAction = currentOperation === "edit-prepare" ? "edit"
+        : currentOperation === "delete-prepare" ? "delete" : "consolidate"
+      if (!mutation || mutation.action !== expectedAction || !comparison
+          || mutation.handle !== comparison.handle) {
+        error = "Contacts returned an invalid contact-change preview"
+        return
+      }
+      mutationPreview = mutation
+      notice = "Verified the exact Mac Contacts change; review the confirmation"
+      return
+    }
+    if (currentOperation === "edit" || currentOperation === "delete"
+        || currentOperation === "merge") {
+      var appliedMutation = safeMutationPreview(result, true)
+      var appliedAction = currentOperation === "edit" ? "edit"
+        : currentOperation === "delete" ? "delete" : "consolidate"
+      if (!appliedMutation || appliedMutation.action !== appliedAction) {
+        error = "Contacts did not confirm the contact change"
+        return
+      }
+      undoToken = appliedMutation.undoToken
+      undoHandle = appliedMutation.handle
+      undoName = appliedMutation.name
+      undoFieldCount = appliedMutation.changedFields.length
+      undoAction = appliedMutation.action
+      undoCardCount = appliedMutation.action === "consolidate"
+        ? appliedMutation.sourceCardCount + 1 : 1
+      mutationPreview = null
+      mutationRequest = null
+      comparison = null
+      linkPreview = null
+      comparisonOwnerToken = ""
+      notice = appliedMutation.action === "edit"
+        ? "Saved the contact card in Mac Contacts"
+        : appliedMutation.action === "delete"
+          ? "Deleted the source card from Mac Contacts"
+          : "Consolidated " + undoCardCount + " source cards in Mac Contacts"
+      refreshCandidatesAfterExit = true
+      return
+    }
     if (currentOperation === "link-prepare") {
       var prepared = safeLinkPreview(result.preview, false)
       if (!prepared || !comparison || prepared.handle !== comparison.handle
@@ -576,6 +730,8 @@ Item {
       undoHandle = removedPreview.handle
       undoName = removedPreview.name
       undoFieldCount = removedPreview.fieldCount
+      undoAction = "field-removal"
+      undoCardCount = 1
       repairPreview = null
       pendingRepairToken = ""
       pendingOwnerToken = ""
@@ -587,8 +743,13 @@ Item {
       var restoredHandle = safeText(result.handle, 320)
       var restoredName = safeText(result.name, 160)
       var restoredCount = Number(result.fieldCount)
+      var restoredCards = Number(result.cardCount)
+      var restoredAction = ["field-removal", "edit", "delete", "consolidate"].indexOf(result.action) >= 0
+        ? result.action : ""
       if (result.restored !== true || restoredHandle === "" || restoredName === ""
-          || !Number.isInteger(restoredCount) || restoredCount < 1 || restoredCount > 8) {
+          || restoredAction === ""
+          || !Number.isInteger(restoredCards) || restoredCards < 1 || restoredCards > 8
+          || !Number.isInteger(restoredCount) || restoredCount < 1 || restoredCount > 13) {
         error = "Contacts did not confirm the restore"
         return
       }
@@ -596,9 +757,13 @@ Item {
       undoHandle = ""
       undoName = ""
       undoFieldCount = 0
+      undoAction = ""
+      undoCardCount = 0
       notice = result.alreadyPresent === true
         ? "The field was already present in Mac Contacts"
-        : "Restored the field to “" + restoredName + "” on the Mac"
+        : restoredAction === "delete" ? "Recreated the deleted card for “" + restoredName + "”"
+          : restoredAction === "consolidate" ? "Restored " + restoredCards + " pre-merge cards"
+            : "Undid the contact change for “" + restoredName + "”"
       refreshCandidatesAfterExit = true
     }
   }

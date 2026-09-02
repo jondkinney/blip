@@ -14,6 +14,7 @@
  *   printf '%s' '{"handle":"…"}' | bun identities.ts clear
  *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts open
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts compare
+ *   printf '%s' '{"handle":"…","ownerToken":"sha256:…","token":"sha256:…","revision":"sha256:…","card":{…}}' | bun identities.ts edit-prepare
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts link-prepare
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts link
  *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts inspect
@@ -42,7 +43,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 export const MAX_IDENTITIES_BYTES = 48 * 1024;
-export const MAX_IDENTITY_REQUEST_BYTES = 4 * 1024;
+export const MAX_IDENTITY_REQUEST_BYTES = 48 * 1024;
 export const MAX_IDENTITY_OUTPUT_BYTES = 48 * 1024;
 export const MAX_BRIDGE_OUTPUT_BYTES = 48 * 1024;
 export const MAX_IDENTITY_ENTRIES = 64;
@@ -104,8 +105,10 @@ export interface ContactRemoval extends ContactRepairPreview {
 export interface ContactUndo {
   restored: true;
   alreadyPresent: boolean;
+  action: "field-removal" | "edit" | "delete" | "consolidate";
   handle: string;
   name: string;
+  cardCount: number;
   fieldCount: number;
 }
 
@@ -126,6 +129,7 @@ export interface ContactAddress {
 
 export interface ContactCardDetail {
   token: string;
+  revision: string;
   cardNumber: number;
   accountNumber: number;
   hasPhoto: boolean;
@@ -143,6 +147,31 @@ export interface ContactCardDetail {
   emails: ContactLabeledValue[];
   urls: ContactLabeledValue[];
   addresses: ContactAddress[];
+}
+
+export type ContactCardDraft = Omit<
+  ContactCardDetail,
+  "token" | "revision" | "cardNumber" | "accountNumber" | "hasPhoto" | "displayName"
+>;
+
+export interface ContactMutationPreview {
+  action: "edit" | "delete" | "consolidate";
+  handle: string;
+  name: string;
+  cardNumber: number;
+  cardCount: number;
+  accountNumber: number;
+  sourceCardCount: number;
+  changedFields: string[];
+  planHash: string;
+  writeEnabled: boolean;
+}
+
+export interface ContactMutationResult extends ContactMutationPreview {
+  applied: true;
+  undoToken: string;
+  revision?: string;
+  displayName?: string;
 }
 
 export interface ContactComparison {
@@ -175,6 +204,7 @@ export const EMPTY_IDENTITIES: Readonly<IdentityConfig> = Object.freeze({
 
 const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
 const CONTACT_TOKEN = /^sha256:[0-9a-f]{64}$/;
+const CONTACT_REVISION = /^sha256:[0-9a-f]{64}$/;
 const UNDO_TOKEN = /^undo:[0-9a-f]{32}$/;
 
 function own(value: Record<string, unknown>, key: string): unknown {
@@ -218,6 +248,12 @@ export function normalizeIdentityName(value: unknown): string {
 function normalizeContactToken(value: unknown): string {
   if (typeof value !== "string" || !CONTACT_TOKEN.test(value))
     throw new Error("contact token is invalid");
+  return value;
+}
+
+function normalizeContactRevision(value: unknown): string {
+  if (typeof value !== "string" || !CONTACT_REVISION.test(value))
+    throw new Error("contact revision is invalid");
   return value;
 }
 
@@ -637,6 +673,7 @@ function normalizeCardDetail(value: unknown, seen: Set<string>): ContactCardDeta
     throw new Error("Contacts returned an invalid birthday");
   return {
     token,
+    revision: normalizeContactRevision(card.revision),
     cardNumber: finiteInteger(card.cardNumber, "card number", 1, MAX_COMPARE_CARDS),
     accountNumber: finiteInteger(card.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS),
     hasPhoto: card.hasPhoto === true,
@@ -657,6 +694,33 @@ function normalizeCardDetail(value: unknown, seen: Set<string>): ContactCardDeta
   };
 }
 
+export function normalizeContactDraft(value: unknown): ContactCardDraft {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("contact card draft is invalid");
+  const card = value as Record<string, unknown>;
+  const birthday = contactText(card.birthday, "birthday", 10);
+  if (birthday && !/^(?:\d{4}\-|--)\d{2}\-\d{2}$/.test(birthday))
+    throw new Error("birthday must be YYYY-MM-DD or --MM-DD");
+  const draft = {
+    firstName: contactText(card.firstName, "first name", 160),
+    middleName: contactText(card.middleName, "middle name", 160),
+    lastName: contactText(card.lastName, "last name", 160),
+    nickname: contactText(card.nickname, "nickname", 160),
+    organization: contactText(card.organization, "organization", 320),
+    department: contactText(card.department, "department", 320),
+    jobTitle: contactText(card.jobTitle, "job title", 320),
+    birthday,
+    note: contactText(card.note, "note", 1000),
+    phones: normalizeLabeledValues(card.phones, "phone"),
+    emails: normalizeLabeledValues(card.emails, "email"),
+    urls: normalizeLabeledValues(card.urls, "URL"),
+    addresses: normalizeAddresses(card.addresses),
+  };
+  if (![draft.firstName, draft.lastName, draft.nickname, draft.organization].some(Boolean))
+    throw new Error("contact card needs a name, nickname, or organization");
+  return draft;
+}
+
 export function normalizeContactComparison(
   value: unknown, requestedHandle: string,
 ): ContactComparison {
@@ -666,7 +730,7 @@ export function normalizeContactComparison(
   const handle = normalizeHandle(body.handle);
   if (identityKey(handle) !== identityKey(requestedHandle))
     throw new Error("Contacts returned a different handle");
-  const cardCount = finiteInteger(body.cardCount, "card count", 2, MAX_COMPARE_CARDS);
+  const cardCount = finiteInteger(body.cardCount, "card count", 1, MAX_COMPARE_CARDS);
   const sourceCount = finiteInteger(body.sourceCount, "source count", 1, MAX_COMPARE_CARDS);
   if (!Array.isArray(body.cards) || body.cards.length !== cardCount)
     throw new Error("Contacts returned an invalid comparison-card list");
@@ -711,6 +775,116 @@ function normalizeExpectedLinkAction(value: unknown): ContactLinkPreview["action
       && value !== "Merge and Link Selected Cards")
     throw new Error("the confirmed Contacts action is invalid");
   return value;
+}
+
+function normalizeMutationPreview(
+  value: unknown, requestedHandle: string, expectedAction?: ContactMutationPreview["action"],
+): ContactMutationPreview {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid mutation preview");
+  const preview = value as Record<string, unknown>;
+  const action = preview.action;
+  if (action !== "edit" && action !== "delete" && action !== "consolidate")
+    throw new Error("Contacts returned an invalid contact action");
+  if (expectedAction && action !== expectedAction)
+    throw new Error("the contact action changed; preview it again");
+  const handle = normalizeHandle(preview.handle);
+  if (identityKey(handle) !== identityKey(requestedHandle))
+    throw new Error("Contacts returned a different handle");
+  if (!Array.isArray(preview.changedFields) || preview.changedFields.length < 1
+      || preview.changedFields.length > 13)
+    throw new Error("Contacts returned an invalid change summary");
+  return {
+    action,
+    handle,
+    name: normalizeIdentityName(preview.name),
+    cardNumber: finiteInteger(preview.cardNumber, "card number", 1, MAX_COMPARE_CARDS),
+    cardCount: finiteInteger(preview.cardCount, "card count", 1, MAX_COMPARE_CARDS),
+    accountNumber: finiteInteger(
+      preview.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
+    ),
+    sourceCardCount: finiteInteger(
+      preview.sourceCardCount, "source card count", 0, MAX_COMPARE_CARDS - 1,
+    ),
+    changedFields: preview.changedFields.map((field) => contactText(field, "changed field", 40)),
+    planHash: normalizeContactRevision(preview.planHash),
+    writeEnabled: preview.writeEnabled === true,
+  };
+}
+
+type ContactMutationOperation =
+  "edit-prepare" | "edit" | "delete-prepare" | "delete" | "merge-prepare" | "merge";
+
+export function contactMutationOnMac(
+  operation: ContactMutationOperation,
+  input: Record<string, unknown>,
+  runner: Runner = spawnSync,
+): { preview?: ContactMutationPreview; result?: ContactMutationResult } {
+  const handle = normalizeHandle(input.handle);
+  const ownerToken = normalizeContactToken(input.ownerToken);
+  const request: Record<string, unknown> = { operation, handle, ownerToken };
+  let action: ContactMutationPreview["action"];
+  if (operation === "edit-prepare" || operation === "edit") {
+    action = "edit";
+    request.token = normalizeContactToken(input.token);
+    request.revision = normalizeContactRevision(input.revision);
+    request.card = normalizeContactDraft(input.card);
+  } else if (operation === "delete-prepare" || operation === "delete") {
+    action = "delete";
+    request.token = normalizeContactToken(input.token);
+    request.revision = normalizeContactRevision(input.revision);
+  } else {
+    action = "consolidate";
+    request.targetToken = normalizeContactToken(input.targetToken);
+    request.card = normalizeContactDraft(input.card);
+    if (!Array.isArray(input.revisions) || input.revisions.length < 2
+        || input.revisions.length > MAX_COMPARE_CARDS)
+      throw new Error("contact revision list is invalid");
+    const seen = new Set<string>();
+    request.revisions = input.revisions.map((raw) => {
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+        throw new Error("contact revision is invalid");
+      const item = raw as Record<string, unknown>;
+      const token = normalizeContactToken(item.token);
+      if (seen.has(token)) throw new Error("contact revision list contains a duplicate card");
+      seen.add(token);
+      return { token, revision: normalizeContactRevision(item.revision) };
+    });
+  }
+  const applying = operation === "edit" || operation === "delete" || operation === "merge";
+  if (applying) request.planHash = normalizeContactRevision(input.planHash);
+  const home = process.env.HOME ?? homedir();
+  const result = runner(join(home, "bin", "contacts"), ["--json", "resolve"], {
+    encoding: "utf8",
+    input: JSON.stringify(request),
+    timeout: 35000,
+    maxBuffer: MAX_BRIDGE_OUTPUT_BYTES,
+  });
+  if (result.error) throw new Error(result.error.message || "Contacts bridge failed");
+  const stdout = String(result.stdout || "");
+  if (Buffer.byteLength(stdout) > MAX_BRIDGE_OUTPUT_BYTES)
+    throw new Error("Contacts returned too much data");
+  let response: unknown;
+  try { response = JSON.parse(stdout); }
+  catch { throw new Error("Contacts returned invalid JSON"); }
+  if (response === null || typeof response !== "object" || Array.isArray(response))
+    throw new Error("Contacts returned an invalid response");
+  const body = response as Record<string, unknown>;
+  if (result.status !== 0 || body.ok !== true)
+    throw new Error(safeError(body.error || "Contacts operation failed"));
+  const preview = normalizeMutationPreview(applying ? body : body.preview, handle, action);
+  if (!applying) return { preview };
+  if (body.applied !== true) throw new Error("Contacts did not confirm the contact change");
+  const mutation: ContactMutationResult = {
+    ...preview,
+    applied: true,
+    undoToken: normalizeUndoToken(body.undoToken),
+  };
+  if (action !== "delete") {
+    mutation.revision = normalizeContactRevision(body.revision);
+    mutation.displayName = contactText(body.displayName, "display name", 160);
+  }
+  return { result: mutation };
 }
 
 export function resolveOnMac(
@@ -818,13 +992,19 @@ export function resolveOnMac(
     };
   }
   if (body.restored !== true) throw new Error("Contacts did not confirm the restore");
+  const undoAction = body.action;
+  if (undoAction !== "field-removal" && undoAction !== "edit" && undoAction !== "delete"
+      && undoAction !== "consolidate")
+    throw new Error("Contacts returned an invalid undo action");
   return {
     undo: {
       restored: true,
       alreadyPresent: body.alreadyPresent === true,
+      action: undoAction,
       handle: normalizeHandle(body.handle),
       name: normalizeIdentityName(body.name),
-      fieldCount: finiteInteger(body.fieldCount, "restored field count", 1, MAX_REPAIR_FIELDS),
+      cardCount: finiteInteger(body.cardCount, "restored card count", 1, MAX_COMPARE_CARDS),
+      fieldCount: finiteInteger(body.fieldCount, "restored field count", 1, 13),
     },
   };
 }
@@ -994,6 +1174,18 @@ async function main(): Promise<void> {
       else emit({ ok: true, ...result.linkResult });
       return;
     }
+    if (["edit-prepare", "edit", "delete-prepare", "delete", "merge-prepare", "merge"]
+      .includes(operation)) {
+      const mutationOperation = operation as ContactMutationOperation;
+      const applying = operation === "edit" || operation === "delete" || operation === "merge";
+      if (applying && !contactWritesEnabled())
+        throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
+      requireSavedRepairOwner(path, request.handle, request.ownerToken);
+      const result = contactMutationOnMac(mutationOperation, request);
+      if (result.preview) emit({ ok: true, preview: result.preview });
+      else emit({ ok: true, ...result.result });
+      return;
+    }
     if (operation === "inspect" || operation === "remove") {
       if (!contactWritesEnabled())
         throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
@@ -1011,7 +1203,8 @@ async function main(): Promise<void> {
       return;
     }
     throw new Error(
-      "operation must be read, candidates, choose, custom, clear, open, compare, link-prepare, link, inspect, remove, or undo",
+      "operation must be read, candidates, choose, custom, clear, open, compare, edit-prepare, "
+      + "edit, delete-prepare, delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo",
     );
   } catch (error) {
     emit({ ok: false, error: safeError(error) });

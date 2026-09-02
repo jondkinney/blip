@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a full in-Blip contact workspace: revision-pinned editing for names,
+  work fields, birthday, notes, phones, email addresses, websites, and postal
+  addresses; confirmed whole-card deletion; and editable multi-card
+  consolidation into a chosen source account. Every apply revalidates its
+  preview and saves a private bounded undo receipt first.
 - **Reads now reach the Mac, and your phone.** Blip's "mark all read" cleared
   the badge on Linux and nothing else; the iPhone kept its red dots. The old
   note called this impossible because `open imessage://<handle>` does not flip
