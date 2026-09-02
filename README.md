@@ -326,11 +326,10 @@ saves. The card photo is retained on edit but is not editable in Blip.
 For duplicates, choose **Merge into card N…** to build an editable combined
 card. The selected card and its account remain authoritative; its scalar
 choices win, blanks are filled from the other cards, and unique collection
-values are combined. After a destructive confirmation, Blip updates that
-target through Contacts.app and batches the other exact source-card deletions
-through Apple's current Contacts framework. If deletion fails, Blip restores
-the target from its pre-change snapshot. This deterministic path does not
-depend on Apple's menu item being enabled.
+values are combined. After a destructive confirmation, Blip batches the target
+update and the other exact source-card deletions in one save through Apple's
+current Contacts framework. This deterministic path does not depend on Apple's
+menu item being enabled.
 
 From that comparison Blip can ask Contacts to select the exact cards and report
 Apple's currently enabled **Link Selected Cards** or **Merge Selected Cards**

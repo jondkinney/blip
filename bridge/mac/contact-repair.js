@@ -350,7 +350,7 @@ function sameCard(person, expected) {
 function removeAll(contacts, person, property) {
   const entries = person[property]();
   for (let i = entries.length - 1; i >= 0; i--)
-    contacts.remove(entries[i], { from: person });
+    contacts.remove(person[property].at(i), { from: person });
 }
 
 function birthdayDate(value) {
@@ -365,28 +365,52 @@ function birthdayDate(value) {
   return date;
 }
 
+function cardStep(label, action) {
+  try {
+    action();
+  } catch (error) {
+    const detail = String(error && error.message ? error.message : error)
+      .replace(UNSAFE, " ").replace(/\s+/g, " ").trim().slice(0, 120);
+    throw new Error("Contacts could not update " + label + (detail ? ": " + detail : ""));
+  }
+}
+
 function setCard(contacts, person, card) {
   const scalar = ["firstName", "middleName", "lastName", "nickname", "organization",
     "department", "jobTitle", "note"];
-  for (let i = 0; i < scalar.length; i++) person[scalar[i]].set(card[scalar[i]]);
-  person.birthDate.set(birthdayDate(card.birthday));
-  removeAll(contacts, person, "phones");
-  removeAll(contacts, person, "emails");
-  removeAll(contacts, person, "urls");
-  removeAll(contacts, person, "addresses");
-  for (let i = 0; i < card.phones.length; i++) addField(contacts, person, "phone", card.phones[i]);
-  for (let i = 0; i < card.emails.length; i++) addField(contacts, person, "email", card.emails[i]);
+  for (let i = 0; i < scalar.length; i++) {
+    const property = scalar[i];
+    cardStep(property, function() { person[property].set(card[property]); });
+  }
+  cardStep("birthday", function() { person.birthDate.set(birthdayDate(card.birthday)); });
+  cardStep("phone numbers", function() { removeAll(contacts, person, "phones"); });
+  cardStep("email addresses", function() { removeAll(contacts, person, "emails"); });
+  cardStep("websites", function() { removeAll(contacts, person, "urls"); });
+  cardStep("postal addresses", function() { removeAll(contacts, person, "addresses"); });
+  for (let i = 0; i < card.phones.length; i++) {
+    const field = card.phones[i];
+    cardStep("phone number " + String(i + 1), function() { addField(contacts, person, "phone", field); });
+  }
+  for (let i = 0; i < card.emails.length; i++) {
+    const field = card.emails[i];
+    cardStep("email address " + String(i + 1), function() { addField(contacts, person, "email", field); });
+  }
   for (let i = 0; i < card.urls.length; i++) {
-    const properties = { value: card.urls[i].value };
-    if (card.urls[i].label) properties.label = card.urls[i].label;
-    contacts.add(contacts.Url(properties), { to: person });
+    const field = card.urls[i];
+    cardStep("website " + String(i + 1), function() {
+      const properties = { value: field.value };
+      if (field.label) properties.label = field.label;
+      contacts.add(contacts.Url(properties), { to: person });
+    });
   }
   for (let i = 0; i < card.addresses.length; i++) {
     const source = card.addresses[i];
-    const properties = { street: source.street, city: source.city, state: source.state,
-      zip: source.postalCode, country: source.country, countryCode: source.countryCode };
-    if (source.label) properties.label = source.label;
-    contacts.add(contacts.Address(properties), { to: person });
+    cardStep("postal address " + String(i + 1), function() {
+      const properties = { street: source.street, city: source.city, state: source.state,
+        zip: source.postalCode, country: source.country, countryCode: source.countryCode };
+      if (source.label) properties.label = source.label;
+      contacts.add(contacts.Address(properties), { to: person });
+    });
   }
 }
 
@@ -456,31 +480,16 @@ function perform(request) {
       sourceCount: request.restoreCards.length };
   }
   if (request.operation === "consolidate") {
-    const target = peopleForId(Contacts, request.targetUid);
-    const sources = request.sourceUids.map(function(uid) { return peopleForId(Contacts, uid); });
-    const people = [target].concat(sources);
+    const people = [peopleForId(Contacts, request.targetUid)].concat(
+      request.sourceUids.map(function(uid) { return peopleForId(Contacts, uid); })
+    );
     for (let i = 0; i < people.length; i++) {
       if (!sameCard(people[i], request.expectedCards[i]))
         throw new Error("a selected card changed; refresh before merging");
     }
     if (Contacts.unsaved())
       throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
-    const targetBefore = describePerson(target);
-    try {
-      setCard(Contacts, target, request.card);
-      Contacts.save();
-      if (!sameCard(target, Object.assign({ displayName: describePerson(target).displayName }, request.card)))
-        throw new Error("Contacts did not save the merged target card");
-    } catch (error) {
-      try {
-        setCard(Contacts, target, targetBefore);
-        Contacts.save();
-        if (Contacts.unsaved()) Contacts.save();
-      } catch (_) { /* original error wins; the pre-written receipt remains for recovery */ }
-      throw error;
-    }
-    return { ok: true, updatedForConsolidation: true,
-      card: describePerson(target), sourceCount: sources.length };
+    return { ok: true, readyToConsolidate: true, sourceCount: request.sourceUids.length };
   }
   if (request.operation === "edit" || request.operation === "delete") {
     const editable = peopleForId(Contacts, request.personUid);

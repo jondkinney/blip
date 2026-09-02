@@ -562,7 +562,7 @@ class ContactResolverTests(unittest.TestCase):
                     contacts.card_draft(other),
                 )
 
-    def test_consolidation_updates_target_then_batches_exact_source_deletion(self):
+    def test_consolidation_preflights_then_atomically_updates_and_deletes(self):
         before = {
             "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
             "lastName": "Rivera", "nickname": "", "organization": "",
@@ -589,24 +589,27 @@ class ContactResolverTests(unittest.TestCase):
         with mock.patch.object(contacts, "require_write_gate"), mock.patch.object(
             contacts, "prepare_consolidation", return_value=(preview, private),
         ), mock.patch.object(
+            contacts, "describe_records", return_value=[after],
+        ), mock.patch.object(
             contacts, "write_undo_receipt",
             side_effect=lambda value: events.append("receipt") or "undo:" + "e" * 32,
         ), mock.patch.object(
             contacts, "run_contact_repair",
-            side_effect=lambda value: events.append("target") or {
-                "ok": True, "updatedForConsolidation": True,
-                "sourceCount": 1, "card": after,
+            side_effect=lambda value: events.append("preflight") or {
+                "ok": True, "readyToConsolidate": True, "sourceCount": 1,
             },
         ), mock.patch.object(
-            contacts, "run_contact_delete",
-            side_effect=lambda value: events.append("delete") or {"ok": True, "deletedCount": 1},
-        ) as delete:
+            contacts, "run_contact_consolidation",
+            side_effect=lambda *value: events.append("consolidate") or {
+                "ok": True, "updated": True, "deletedCount": 1,
+            },
+        ) as consolidate:
             result = contacts.apply_consolidation(
                 "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
                 [], draft, plan,
             )
-        self.assertEqual(events, ["receipt", "target", "delete"])
-        delete.assert_called_once_with(["person-2"])
+        self.assertEqual(events, ["preflight", "receipt", "consolidate"])
+        consolidate.assert_called_once_with("person-1", ["person-2"], draft)
         self.assertTrue(result["applied"])
 
 
