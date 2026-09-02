@@ -23,6 +23,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  identityNameFor,
+  safeReadIdentityConfig,
+  type IdentityConfig,
+} from "./identities";
 
 const HOME = process.env.HOME ?? homedir();
 
@@ -254,6 +259,30 @@ export function loadAllowlist(path = ALLOWLIST_PATH): string[] {
 export function displayName(msgs: ImsgMessage[]): string {
   for (const m of msgs) if (m.name) return m.name;
   return chatKey(msgs[0]);
+}
+
+/** Apply a user's explicit resolution before any list, toast, or group label is built. */
+export function applyIdentityOverrides(
+  msgs: ImsgMessage[],
+  config: IdentityConfig,
+): ImsgMessage[] {
+  return msgs.map((message) => {
+    const name = identityNameFor(message.handle, config)
+      || identityNameFor(chatKey(message), config);
+    return name && name !== message.name ? { ...message, name } : message;
+  });
+}
+
+/** Complete chat rows may have no message in the preview window, so name DMs again here. */
+export function applyThreadIdentityOverrides(
+  threads: Thread[],
+  config: IdentityConfig,
+): Thread[] {
+  return threads.map((thread) => {
+    if (isGroupChat(thread.chat)) return thread;
+    const name = identityNameFor(thread.chat, config) || identityNameFor(thread.handle, config);
+    return name && name !== thread.name ? { ...thread, name } : thread;
+  });
 }
 
 /**
@@ -1007,7 +1036,9 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
     };
   }
 
-  const highest = maxTs(fetched.msgs, state.watermark);
+  const identityConfig = safeReadIdentityConfig();
+  const resolvedMessages = applyIdentityOverrides(fetched.msgs, identityConfig);
+  const highest = maxTs(resolvedMessages, state.watermark);
   // A message can carry a FUTURE timestamp (timezone skew — a "Sep 1
   // 08:53" birthday text arrived Aug 31 morning). A read mark taken from
   // the GLOBAL max therefore poisoned unrelated threads: anything arriving
@@ -1017,7 +1048,7 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   // nothing beyond now leaks onto other threads.
   const nowTs = localNowTs();
   const chatMax: Record<string, string> = {};
-  for (const m of fetched.msgs) {
+  for (const m of resolvedMessages) {
     const c = chatKey(m);
     if (!chatMax[c] || m.ts > chatMax[c]!) chatMax[c] = m.ts;
   }
@@ -1045,8 +1076,8 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   // keep the last good copy if the lookup fails.
   const groups = (deep ? fetchGroups() : null) ?? state.groups;
   // persist only on two independent twins; one may be a coincidence (#6)
-  const selfChats = [...new Set([...state.selfChats, ...detectSelfChats(fetched.msgs, 2)])];
-  const msgs = dedupeSelfEcho(fetched.msgs, selfChats);
+  const selfChats = [...new Set([...state.selfChats, ...detectSelfChats(resolvedMessages, 2)])];
+  const msgs = dedupeSelfEcho(resolvedMessages, selfChats);
   let exactCounts = unreadCounts(msgs, state.readMark, state.readMarks, selfChats);
   let exactOldest = unreadOldest(msgs, state.readMark, state.readMarks, selfChats);
   if (markRead) {
@@ -1074,9 +1105,12 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   exactCounts = foldChatRecord(exactCounts, chatAliases, (a, b) => a + b);
   exactOldest = foldChatRecord(exactOldest, chatAliases, (a, b) => (a < b ? a : b));
   const foldedWindow = foldThreadAliases(windowThreads, chatAliases);
-  const threads = chats ? mergeChats(foldedWindow, chats, groups, exactCounts) : foldedWindow;
+  const threads = applyThreadIdentityOverrides(
+    chats ? mergeChats(foldedWindow, chats, groups, exactCounts) : foldedWindow,
+    identityConfig,
+  );
   const toast = selectToasts(msgs, state.watermark, loadAllowlist(), state.toasted);
-  const failures = selectFailures(fetched.msgs, state.toasted, nowTs);
+  const failures = selectFailures(resolvedMessages, state.toasted, nowTs);
   const links = selectIncomingLinks(msgs, state.watermark, state.toasted, selfChats);
   const unread = Object.values(exactCounts).reduce((n, count) => n + count, 0);
 

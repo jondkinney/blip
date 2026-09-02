@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import {
   chatKey,
+  applyIdentityOverrides,
   dedupeSelfEcho,
   isGroupChat,
   loadState,
@@ -22,6 +23,7 @@ import {
   type LinkCard,
   type Tapback,
 } from "./collector";
+import { safeReadIdentityConfig } from "./identities";
 export { dedupeSelfEcho };
 
 const HOME = process.env.HOME ?? homedir();
@@ -323,7 +325,8 @@ export function loadThread(
   try {
     const parsed = JSON.parse(res.stdout as string);
     if (!Array.isArray(parsed)) throw new Error("not an array");
-    const msgs = selectThread(parsed as ImsgMessage[], chat, group, limit, loadState().selfChats);
+    const named = applyIdentityOverrides(parsed as ImsgMessage[], safeReadIdentityConfig());
+    const msgs = selectThread(named, chat, group, limit, loadState().selfChats);
     return { ok: true, online: true, error: "", bubbles: decorate(msgs, today) };
   } catch (e) {
     return { ok: false, online: true, error: `bad JSON from imsg: ${e}`, bubbles: [] };

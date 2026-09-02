@@ -24,6 +24,10 @@ BarWidget {
   readonly property string collectorPath:
     decodeURIComponent(Qt.resolvedUrl("collector.ts").toString().replace(/^file:\/\//, ""))
 
+  // One validated preference source for both render surfaces. The popout and
+  // app update together, and external dotfile restores are picked up live.
+  BlipPreferences { id: preferences }
+
   // ---- collector state
   property var threads: []           // [{chat,name,handle,service,last_ts,last_text,last_from_me,count,unread,pinned,pin_order}]
   property string threadsJson: ""    // last assigned list, for no-op detection
@@ -100,6 +104,7 @@ BarWidget {
     target.bar = root.bar
     target.anchorItem = button
     target.hostWidget = root
+    target.preferences = preferences
   }
   onBarChanged: injectPanel()
 
@@ -125,7 +130,10 @@ BarWidget {
     id: windowLoader
     active: root.leader                // created at start so it can self-restore
     source: Qt.resolvedUrl("BlipWindow.qml")
-    onLoaded: item.hostWidget = root
+    onLoaded: {
+      item.hostWidget = root
+      item.preferences = preferences
+    }
   }
   readonly property bool windowVisible: windowLoader.item ? windowLoader.item.visible === true : false
   function hideWindow() {
@@ -162,6 +170,14 @@ BarWidget {
     Quickshell.execDetached(["sh", "-c",
       'for i in 1 2 3 4 5 6 7 8; do a=$(hyprctl clients -j | jq -r \'.[] | select(.title | startswith("Blip")) | .address\' | head -1); [ -n "$a" ] && break; sleep 0.15; done; ' +
       '[ -n "$a" ] && hyprctl dispatch "hl.dsp.focus({ window = \\"address:$a\\" })" >/dev/null'])
+  }
+  function showSettings() {
+    showApp()
+    Qt.callLater(function() {
+      if (!windowLoader.item) return
+      windowLoader.item.visible = true
+      windowLoader.item.openSettings()
+    })
   }
   /** Either surface open → keep the deep (complete) thread list. */
   function anySurfaceOpen() {
@@ -557,7 +573,7 @@ BarWidget {
   // ------------------------------------------------------------ IPC
   // IPC that sends or reads message content is a deputy for any local
   // process (Codex audit #3). It is opt-in: automation=on in bridge.conf.
-  // status/open/close/toggle/window/app stay available — they expose nothing.
+  // status/open/close/toggle/window/app/settings stay available — they expose nothing.
   property bool automationOn: false
   readonly property string automationOff: "blip: automation=off — set automation=on in ~/.config/blip/bridge.conf to allow ipc send/read"
   FileView {
@@ -594,6 +610,7 @@ BarWidget {
     function newchat(query: string): string { if (!root.automationOn) return root.automationOff; return panelLoader.item ? panelLoader.item.newChatFor(query) : "no panel" }
     function window(): string { root.toggleWindow(); return root.windowVisible ? "window shown" : "window hidden" }
     function app(): string { root.showApp(); return "app shown + focused" }
+    function settings(): string { root.showSettings(); return "settings shown" }
     function windowgoto(chat: string): string {
       if (!root.automationOn) return root.automationOff
       root.ensureWindow()

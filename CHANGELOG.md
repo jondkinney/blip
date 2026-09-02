@@ -250,6 +250,38 @@ findings, the clear ones fixed here, the rest on the roadmap.
 **Repo**
 - CI on every push and PR (bun test, Mac tools byte-compile, shellcheck),
   CONTRIBUTING, issue/PR templates, security policy, GitHub Releases.
+- Add explicitly gated Mac Contacts repair from Blip: exact-card preview,
+  second confirmation, supported Contacts.app removal, Mac-local undo receipt,
+  and post-change revalidation. The restricted SSH key remains unable to turn
+  contact writes on by itself.
+- Add an in-Blip active-card comparison with bounded contact details, a
+  de-duplicated combined view, missing-detail hints, exact-card editing handoff,
+  and guarded invocation of Contacts' native link/merge action. Preview and
+  execution are separate, the confirmed action is pinned end-to-end, and Blip
+  never links during discovery or testing.
+- Keep the Settings UI visually stable during five-second configuration checks: silent identity reads no longer toggle visible loading state, and unchanged identity/preference results no longer rebuild QML models or controls.
+
+**Added**
+- File-backed appearance preferences with an in-app QML editor: bubble colors,
+  app-window opacity, font scale, density, sidebar width, avatar size, and
+  corner roundness. `~/.config/blip/preferences.json` is portable, atomically
+  written, owner-only, bounded, and reloaded live after an external restore.
+- Messages.app pinned conversations, sourced read-only from the Mac's pinning
+  plist and rendered in its ordered circular-avatar grid above the regular
+  chronological list.
+- Explicit contact-name resolution for ambiguous phone/email handles. The QML
+  chooser writes a bounded, atomic `~/.config/blip/identities.json` override;
+  a source-fix action opens the validated persistent card in Contacts.app on
+  the Mac without writing Apple’s private AddressBook database.
+
+**Changed**
+- Contact-name repair is now a guided two-stage flow: selecting a candidate is
+  harmless, the Blip-only save is explicit, and optional Mac repair lists and
+  opens every exact source card separately. Generic one-click **Use** and
+  **Fix on Mac** controls were removed.
+- Settings now separates Contacts from Appearance with tabs. Contact repair is
+  a list-to-detail flow with Back/Escape navigation, bounded content width, and
+  collapsed Mac/source-card details instead of one enormous settings scroll.
 
 ## 2.0.0 — 2026-08-31
 
