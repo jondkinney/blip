@@ -121,6 +121,28 @@ ColumnLayout {
     if (isMerge) resolver.prepareConsolidation(card, draft())
     else resolver.prepareCardEdit(card, draft())
   }
+  function removedCardsLabel() {
+    if (!resolver || !resolver.mutationPreview) return ""
+    var cards = comparison && Array.isArray(comparison.cards) ? comparison.cards : []
+    var result = []
+    for (var i = 0; i < cards.length; i++) {
+      var candidate = cards[i]
+      if (!candidate || candidate.cardNumber === resolver.mutationPreview.cardNumber) continue
+      result.push(candidate.sourceName + " · card " + candidate.cardNumber)
+    }
+    return result.length > 0 ? result.join("; ")
+      : resolver.mutationPreview.sourceCardCount + " other source card(s)"
+  }
+  function addressSummary(value) {
+    if (!value) return ""
+    var parts = [value.street, value.city, value.state, value.postalCode, value.country]
+    var result = []
+    for (var i = 0; i < parts.length; i++) {
+      var part = text(parts[i]).trim()
+      if (part !== "") result.push(part)
+    }
+    return result.join(", ")
+  }
   function closeEditor() {
     if (resolver && resolver.loading) return
     if (resolver) resolver.cancelMutation()
@@ -144,7 +166,9 @@ ColumnLayout {
       spacing: root.space(2)
       Text {
         Layout.fillWidth: true
-        text: root.isMerge ? "Build one merged contact" : "Edit source card " + (root.card ? root.card.cardNumber : "")
+        text: root.previewOpen
+          ? root.isMerge ? "Review merged contact" : "Review contact changes"
+          : root.isMerge ? "Build one merged contact" : "Edit source card " + (root.card ? root.card.cardNumber : "")
         textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
@@ -153,7 +177,9 @@ ColumnLayout {
       }
       Text {
         Layout.fillWidth: true
-        text: root.isMerge
+        text: root.previewOpen
+          ? "Nothing has been written to Mac Contacts yet. Review the result and source-card outcome below."
+          : root.isMerge
           ? (root.card ? root.card.sourceName : "Contacts source") + " · card "
             + (root.card ? root.card.cardNumber : "") + " will remain; the other source cards will be deleted after confirmation."
           : (root.card ? root.card.sourceName : "Contacts source") + " · card "
@@ -169,14 +195,16 @@ ColumnLayout {
   }
 
   NoticeBox {
+    visible: !root.previewOpen
     tone: root.isMerge ? "warning" : "info"
     message: root.isMerge
       ? "Review every field below. Blip started with the target card’s choices, filled its blanks, and combined unique phone, email, website, and address values. The target card’s photo is retained; photos on deleted source cards are not copied."
       : "Changes stay in this form until you click Review changes. Blip then rechecks the exact Mac card and shows a separate confirmation before saving. The existing photo is retained."
   }
 
-  SectionTitle { label: "NAME & WORK" }
+  SectionTitle { visible: !root.previewOpen; label: "NAME & WORK" }
   GridLayout {
+    visible: !root.previewOpen
     Layout.fillWidth: true
     columns: width >= root.space(720) ? 2 : 1
     columnSpacing: root.space(12)
@@ -191,17 +219,18 @@ ColumnLayout {
     Field { id: birthday; title: "Birthday"; hint: "YYYY-MM-DD or --MM-DD"; maximum: 10 }
   }
 
-  ValueList { title: "PHONE NUMBERS"; model: phones; emptyLabel: "Add phone" }
-  ValueList { title: "EMAIL ADDRESSES"; model: emails; emptyLabel: "Add email" }
-  ValueList { title: "WEBSITES"; model: urls; emptyLabel: "Add website" }
+  ValueList { visible: !root.previewOpen; title: "PHONE NUMBERS"; model: phones; emptyLabel: "Add phone" }
+  ValueList { visible: !root.previewOpen; title: "EMAIL ADDRESSES"; model: emails; emptyLabel: "Add email" }
+  ValueList { visible: !root.previewOpen; title: "WEBSITES"; model: urls; emptyLabel: "Add website" }
 
   RowLayout {
+    visible: !root.previewOpen
     Layout.fillWidth: true
     SectionTitle { Layout.fillWidth: true; label: "POSTAL ADDRESSES" }
   }
   Text {
     Layout.fillWidth: true
-    visible: addresses.count === 0
+    visible: !root.previewOpen && addresses.count === 0
     text: "No postal addresses"
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.4)
@@ -209,7 +238,7 @@ ColumnLayout {
     font.pixelSize: root.fontSize(Style.font.caption)
   }
   Repeater {
-    model: addresses
+    model: root.previewOpen ? null : addresses
     delegate: Rectangle {
       id: addressRow
       required property int index
@@ -253,6 +282,7 @@ ColumnLayout {
     }
   }
   RowLayout {
+    visible: !root.previewOpen
     Layout.fillWidth: true
     Layout.topMargin: root.space(2)
     Layout.bottomMargin: root.space(4)
@@ -265,7 +295,7 @@ ColumnLayout {
     }
   }
 
-  SectionTitle { label: "NOTES" }
+  SectionTitle { visible: !root.previewOpen; label: "NOTES" }
   TextField {
     id: notes
     Layout.fillWidth: true
@@ -274,9 +304,10 @@ ColumnLayout {
     font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.bodySmall)
     maximumLength: 1000
     enabled: !root.previewOpen
+    visible: !root.previewOpen
   }
 
-  MutationConfirmation {
+  MutationReview {
     Layout.fillWidth: true
     visible: root.resolver && root.resolver.mutationPreview !== null
     preview: root.resolver ? root.resolver.mutationPreview : null
@@ -297,7 +328,7 @@ ColumnLayout {
     ActionButton { label: "Discard draft"; onClicked: root.closeEditor() }
     ActionButton {
       primary: true
-      label: root.isMerge ? "Review consolidation…" : "Review changes…"
+      label: root.isMerge ? "Review merged contact…" : "Review changes…"
       enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
       onClicked: root.review()
     }
@@ -431,60 +462,274 @@ ColumnLayout {
       font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.caption) }
   }
 
-  component MutationConfirmation: Rectangle {
-    id: confirmBox
+  component MutationReview: Rectangle {
+    id: reviewBox
     required property var preview
     Layout.fillWidth: true
-    implicitHeight: confirmation.implicitHeight + root.space(24)
-    radius: root.corner(root.space(10))
-    color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.09)
-    border.width: 2; border.color: root.urgent
+    implicitHeight: reviewContent.implicitHeight + root.space(28)
+    radius: root.corner(root.space(12))
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+    border.width: 1
+    border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.42)
+
     ColumnLayout {
-      id: confirmation
-      anchors.fill: parent; anchors.margins: root.space(12); spacing: root.space(8)
-      Text { Layout.fillWidth: true; text: "CONFIRM CONTACTS CHANGE"; textFormat: Text.PlainText;
-        color: root.urgent; font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.caption); font.bold: true }
-      Text {
+      id: reviewContent
+      anchors.fill: parent
+      anchors.margins: root.space(14)
+      spacing: root.space(14)
+
+      ColumnLayout {
         Layout.fillWidth: true
-        text: confirmBox.preview ? confirmBox.preview.action === "edit"
-          ? "Save changes to card " + confirmBox.preview.cardNumber + " in "
-            + confirmBox.preview.sourceName + "?"
-          : confirmBox.preview.action === "delete"
-            ? "Permanently delete card " + confirmBox.preview.cardNumber + " from "
-              + confirmBox.preview.sourceName + "?"
-            : "Keep card " + confirmBox.preview.cardNumber + " in "
-              + confirmBox.preview.sourceName + " and delete the other "
-              + confirmBox.preview.sourceCardCount + " source card(s)?"
-          : ""
-        textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: root.foreground
-        font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.bodySmall); font.bold: true
-      }
-      Text {
-        Layout.fillWidth: true
-        text: confirmBox.preview ? "Changes: " + confirmBox.preview.changedFields.join(", ") + ". "
-          + (confirmBox.preview.action === "delete"
-            ? "Undo can recreate these text fields in the default writable account, but cannot restore the original account placement, links, or photo."
-            : confirmBox.preview.action === "consolidate"
-              ? "Undo can recreate removed text fields as new cards, but their original account placement, links, and photos cannot be guaranteed."
-              : "An owner-only undo receipt will be saved on the Mac.") : ""
-        textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: root.foreground
-        font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.caption)
-      }
-      RowLayout {
-        Layout.fillWidth: true
-        Item { Layout.fillWidth: true }
-        ActionButton { label: "Back to draft"; onClicked: root.resolver.cancelMutation() }
-        ActionButton {
-          danger: confirmBox.preview && confirmBox.preview.action !== "edit"
-          primary: true
-          label: confirmBox.preview && confirmBox.preview.action === "edit"
-            ? "Save to Mac Contacts" : confirmBox.preview && confirmBox.preview.action === "delete"
-              ? "Delete card from Contacts" : "Merge and delete source cards"
-          enabled: root.resolver && !root.resolver.loading && confirmBox.preview
-            && confirmBox.preview.writeEnabled
-          onClicked: root.resolver.applyMutation()
+        spacing: root.space(4)
+        Text {
+          Layout.fillWidth: true
+          text: reviewBox.preview && reviewBox.preview.action === "consolidate"
+            ? "REVIEW CONSOLIDATION" : reviewBox.preview && reviewBox.preview.action === "delete"
+              ? "REVIEW DELETION" : "REVIEW CONTACT CHANGES"
+          textFormat: Text.PlainText
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+          font.bold: true
+        }
+        Text {
+          Layout.fillWidth: true
+          text: "This is a read-only preview. Nothing below has been saved to Contacts."
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.bodySmall)
+          font.bold: true
         }
       }
+
+      Rectangle {
+        Layout.fillWidth: true
+        implicitHeight: sourceOutcome.implicitHeight + root.space(20)
+        radius: root.corner(root.space(8))
+        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.07)
+        border.width: 1
+        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3)
+        ColumnLayout {
+          id: sourceOutcome
+          anchors.fill: parent
+          anchors.margins: root.space(10)
+          spacing: root.space(6)
+          ReviewOutcomeRow {
+            label: reviewBox.preview && reviewBox.preview.action === "delete" ? "DELETE" : "KEEP AND UPDATE"
+            value: reviewBox.preview
+              ? reviewBox.preview.sourceName + " · card " + reviewBox.preview.cardNumber : ""
+            danger: reviewBox.preview && reviewBox.preview.action === "delete"
+          }
+          ReviewOutcomeRow {
+            visible: reviewBox.preview && reviewBox.preview.action === "consolidate"
+            label: "DELETE AFTER MERGE"
+            value: root.removedCardsLabel()
+            danger: true
+          }
+          Text {
+            Layout.fillWidth: true
+            text: reviewBox.preview
+              ? "Different from the surviving card: " + reviewBox.preview.changedFields.join(", ") + "."
+              : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.foreground, 1.3)
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.caption)
+          }
+        }
+      }
+
+      SectionTitle {
+        label: reviewBox.preview && reviewBox.preview.action === "delete"
+          ? "CONTACT CARD TO DELETE" : reviewBox.preview && reviewBox.preview.action === "consolidate"
+            ? "MERGED CONTACT TO KEEP" : "CONTACT AFTER SAVING"
+      }
+      GridLayout {
+        Layout.fillWidth: true
+        columns: width >= root.space(720) ? 2 : 1
+        columnSpacing: root.space(10)
+        rowSpacing: root.space(8)
+        ReviewField { label: "First name"; value: firstName.text }
+        ReviewField { label: "Middle name"; value: middleName.text }
+        ReviewField { label: "Last name"; value: lastName.text }
+        ReviewField { label: "Nickname"; value: nickname.text }
+        ReviewField { label: "Organization"; value: organization.text }
+        ReviewField { label: "Department"; value: department.text }
+        ReviewField { label: "Job title"; value: jobTitle.text }
+        ReviewField { label: "Birthday"; value: birthday.text }
+      }
+      ReviewValueList { title: "PHONE NUMBERS"; sourceModel: phones }
+      ReviewValueList { title: "EMAIL ADDRESSES"; sourceModel: emails }
+      ReviewValueList { title: "WEBSITES"; sourceModel: urls }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        visible: addresses.count > 0
+        spacing: root.space(6)
+        SectionTitle { label: "POSTAL ADDRESSES" }
+        Repeater {
+          model: addresses
+          delegate: ReviewOutcomeRow {
+            required property string street
+            required property string city
+            required property string state
+            required property string postalCode
+            required property string country
+            value: root.addressSummary({ street: street, city: city, state: state,
+              postalCode: postalCode, country: country })
+          }
+        }
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        visible: notes.text.trim() !== ""
+        spacing: root.space(6)
+        SectionTitle { label: "NOTES" }
+        Text {
+          Layout.fillWidth: true
+          text: notes.text
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.bodySmall)
+        }
+      }
+
+      Rectangle {
+        Layout.fillWidth: true
+        implicitHeight: finalConfirmation.implicitHeight + root.space(22)
+        radius: root.corner(root.space(9))
+        color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.08)
+        border.width: 1
+        border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.65)
+        ColumnLayout {
+          id: finalConfirmation
+          anchors.fill: parent
+          anchors.margins: root.space(11)
+          spacing: root.space(8)
+          Text {
+            Layout.fillWidth: true
+            text: "FINAL CONFIRMATION"
+            textFormat: Text.PlainText
+            color: root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.caption)
+            font.bold: true
+          }
+          Text {
+            Layout.fillWidth: true
+            text: reviewBox.preview ? reviewBox.preview.action === "edit"
+              ? "Save this reviewed contact to " + reviewBox.preview.sourceName + "?"
+              : reviewBox.preview.action === "delete"
+                ? "Delete this reviewed source card from " + reviewBox.preview.sourceName + "?"
+                : "Save the reviewed merged contact to " + reviewBox.preview.sourceName
+                  + " and delete " + reviewBox.preview.sourceCardCount + " other source card(s)?"
+              : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.bodySmall)
+            font.bold: true
+          }
+          Text {
+            Layout.fillWidth: true
+            text: reviewBox.preview ? reviewBox.preview.action === "delete"
+              ? "Undo can recreate the text fields in the default writable account, but cannot restore the original account placement, links, or photo."
+              : reviewBox.preview.action === "consolidate"
+                ? "Undo can recreate removed text fields as new cards, but their original account placement, links, and photos cannot be guaranteed."
+                : "An owner-only undo receipt will be saved on the Mac."
+              : ""
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            color: Qt.darker(root.foreground, 1.25)
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.caption)
+          }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: root.space(8)
+            Item { Layout.fillWidth: true }
+            ActionButton { label: "Back to edit"; onClicked: root.resolver.cancelMutation() }
+            ActionButton {
+              danger: reviewBox.preview && reviewBox.preview.action !== "edit"
+              primary: true
+              label: reviewBox.preview && reviewBox.preview.action === "edit"
+                ? "Save to Mac Contacts" : reviewBox.preview && reviewBox.preview.action === "delete"
+                  ? "Delete card from Contacts" : "Merge and delete source cards"
+              enabled: root.resolver && !root.resolver.loading && reviewBox.preview
+                && reviewBox.preview.writeEnabled
+              onClicked: root.resolver.applyMutation()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  component ReviewField: Rectangle {
+    property string label: ""
+    property string value: ""
+    Layout.fillWidth: true
+    visible: value.trim() !== ""
+    implicitHeight: reviewFieldContent.implicitHeight + root.space(16)
+    radius: root.corner(root.space(7))
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.045)
+    ColumnLayout {
+      id: reviewFieldContent
+      anchors.fill: parent
+      anchors.margins: root.space(8)
+      spacing: root.space(2)
+      Text { text: parent.parent.label; textFormat: Text.PlainText; color: Qt.darker(root.foreground, 1.35);
+        font.family: root.fontFamily; font.pixelSize: root.fontSize(Style.font.caption) }
+      Text { Layout.fillWidth: true; text: parent.parent.value; textFormat: Text.PlainText;
+        wrapMode: Text.WordWrap; color: root.foreground; font.family: root.fontFamily;
+        font.pixelSize: root.fontSize(Style.font.bodySmall); font.bold: true }
+    }
+  }
+
+  component ReviewValueList: ColumnLayout {
+    id: reviewList
+    property string title: ""
+    required property ListModel sourceModel
+    Layout.fillWidth: true
+    visible: sourceModel.count > 0
+    spacing: root.space(6)
+    SectionTitle { label: reviewList.title }
+    Repeater {
+      model: reviewList.sourceModel
+      delegate: ReviewOutcomeRow {}
+    }
+  }
+
+  component ReviewOutcomeRow: RowLayout {
+    required property string label
+    required property string value
+    property bool danger: false
+    Layout.fillWidth: true
+    spacing: root.space(10)
+    Text {
+      Layout.preferredWidth: root.space(170)
+      text: parent.label === "" ? "UNLABELED" : parent.label.toUpperCase()
+      textFormat: Text.PlainText
+      color: parent.danger ? root.urgent : Qt.darker(root.foreground, 1.3)
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.caption)
+      font.bold: true
+    }
+    Text {
+      Layout.fillWidth: true
+      text: parent.value
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.bodySmall)
     }
   }
 

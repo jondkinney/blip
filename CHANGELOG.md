@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replace the disabled edit form shown after contact-change preparation with a
+  focused read-only review. Consolidation now names the card that will remain,
+  the source cards that will be removed, the complete merged contact, and a
+  visually separate final destructive confirmation before anything is saved.
 - Add a read-only cleanup scan for conversations still shown as phone numbers
   or email addresses. It separates unmatched handles, ordinary one-card
   matches, same-name duplicate-card candidates, and naming conflicts; exposes

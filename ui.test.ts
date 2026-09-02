@@ -161,8 +161,13 @@ describe("QML safety invariants", () => {
     expect(contactCompare).toContain("Merge into \" + modelData.sourceName");
     expect(contactEditor).toContain("Review changes…");
     expect(contactEditor).toContain("Delete this source card…");
-    expect(contactEditor).toContain("Review consolidation…");
-    expect(contactEditor).toContain("CONFIRM CONTACTS CHANGE");
+    expect(contactEditor).toContain("Review merged contact…");
+    expect(contactEditor).toContain("REVIEW CONSOLIDATION");
+    expect(contactEditor).toContain("This is a read-only preview. Nothing below has been saved to Contacts.");
+    expect(contactEditor).toContain("MERGED CONTACT TO KEEP");
+    expect(contactEditor).toContain("DELETE AFTER MERGE");
+    expect(contactEditor).toContain("FINAL CONFIRMATION");
+    expect(contactEditor).toContain("Back to edit");
     expect(contactEditor).toContain("Save to Mac Contacts");
     expect(contactEditor).toContain("Merge and delete source cards");
     expect(contactEditor).toContain("function cleanLabel(value)");
@@ -172,7 +177,7 @@ describe("QML safety invariants", () => {
       contactEditor.indexOf('model: parent.model'),
     );
     expect(contactEditor.indexOf('label: "Add address"')).toBeGreaterThan(
-      contactEditor.indexOf('model: addresses'),
+      contactEditor.indexOf('model: root.previewOpen ? null : addresses'),
     );
     expect(contactEditor).toContain("Text.PlainText");
     expect(identities).toContain("function prepareCardEdit(card, draft)");
