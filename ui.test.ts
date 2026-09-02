@@ -50,15 +50,14 @@ describe("QML safety invariants", () => {
 
   test("identity repair separates harmless selection, Blip writes, and Mac review", () => {
     expect(identitySettings).toContain("Selecting a Contacts person changes nothing");
-    expect(identitySettings).toContain("Use “" + "\" + root.selectedCandidate.name");
+    expect(identitySettings).toContain("Use this Contacts name");
     expect(identitySettings).toContain("custom Blip-only name");
     expect(identitySettings).toContain("MAC CONTACTS · OPTIONAL");
     expect(identitySettings).toContain("Viewing or opening a card makes no change");
     expect(identitySettings).toContain("Check Mac Contacts again");
-    expect(identitySettings).toContain("is using “");
-    expect(identitySettings).toContain("name from Mac Contacts");
-    expect(identitySettings).toContain("Nothing has changed yet");
-    expect(identitySettings).toContain("remember this Contacts match");
+    expect(identitySettings).toContain("FROM CONTACTS · CONTACT UNCHANGED");
+    expect(identitySettings).toContain("name currently found in Contacts");
+    expect(identitySettings).not.toContain("MATCH REMEMBERED BY BLIP");
     expect(identitySettings).not.toContain("Already saved in Blip\"");
     expect(identitySettings).not.toContain('label: "Use"');
     expect(identitySettings).not.toContain("Fix on Mac");

@@ -608,7 +608,7 @@ Item {
       var identity = safeIdentity(result.identity)
       if (!identity) { error = "Identity helper returned an invalid saved choice"; return }
       notice = identity.source === "contacts"
-        ? "Saved the Contacts name resolution for “" + identity.name + "”; no contact was changed"
+        ? "Blip will use “" + identity.name + "” from Contacts. The contact was not changed."
         : "Saved custom Blip-only name “" + identity.name + "”; Mac Contacts was not changed"
       reloadAfterExit = true
       choicesChanged()
@@ -619,7 +619,7 @@ Item {
       if (after === null) { error = "Identity helper returned an invalid saved-choice list"; return }
       identitiesJson = JSON.stringify(after)
       identities = after
-      notice = "Forgot the saved Blip name resolution"
+      notice = "Removed the name Blip was using"
       choicesChanged()
       return
     }

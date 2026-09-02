@@ -146,7 +146,7 @@ ColumnLayout {
 
   Text {
     Layout.fillWidth: true
-    text: "Blip remembers which Contacts person belongs to each Messages handle. A Contacts resolution uses that person’s Mac name; only a name you type yourself is a Blip-only override. Editing a source card is a separate, confirmed action."
+    text: "Blip can use the name already on a Mac contact. Only a name you type yourself is a Blip-only name. Editing a source card is a separate, confirmed action."
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: Qt.darker(root.foreground, 1.35)
@@ -157,7 +157,7 @@ ColumnLayout {
   Text {
     Layout.fillWidth: true
     visible: root.savedChoices.length > 0
-    text: "SAVED NAME RESOLUTIONS"
+    text: "CONTACT NAMES USED BY BLIP"
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.25)
     font.family: root.fontFamily
@@ -197,7 +197,7 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: modelData.source === "contacts"
-              ? String(modelData.handle || "") + " · name from Mac Contacts · resolution remembered by Blip"
+              ? String(modelData.handle || "") + " · From Contacts · contact unchanged"
               : String(modelData.handle || "") + " · custom Blip-only name"
             textFormat: Text.PlainText
             elide: Text.ElideMiddle
@@ -212,7 +212,7 @@ ColumnLayout {
           onClicked: root.beginReview(modelData.handle)
         }
         SmallButton {
-          label: modelData.source === "contacts" ? "Forget resolution" : "Remove custom name"
+          label: modelData.source === "contacts" ? "Stop using name" : "Remove custom name"
           danger: true
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.resolver.clearChoice(modelData.handle)
@@ -361,7 +361,7 @@ ColumnLayout {
             Text {
               Layout.fillWidth: true
               text: root.activeChoice && root.activeChoice.source === "contacts"
-                ? "CONTACTS NAME · MATCH REMEMBERED BY BLIP"
+                ? "FROM CONTACTS · CONTACT UNCHANGED"
                 : "CUSTOM BLIP-ONLY NAME"
               textFormat: Text.PlainText
               color: root.accent
@@ -518,8 +518,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: root.selectedCandidate
               ? root.selectedChoiceIsSaved
-                ? "✓ Blip is using “" + root.selectedCandidate.name + "” from Contacts"
-                : "Ready to use “" + root.selectedCandidate.name + "” from Contacts"
+                ? "✓ Using “" + root.selectedCandidate.name + "”"
+                : "Use “" + root.selectedCandidate.name + "” in Blip"
               : ""
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -531,8 +531,8 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: root.selectedChoiceIsSaved
-              ? "The Contacts name is unchanged. Blip only remembers that this person owns the Messages handle."
-              : "Nothing has changed yet. Continue to remember this Contacts match in Blip’s portable identities.json file."
+              ? "That is the name currently found in Contacts. Blip has not changed the contact."
+              : "Blip will display this Contacts name for the number. The contact itself will stay unchanged."
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: Qt.darker(root.foreground, 1.35)
@@ -544,8 +544,8 @@ ColumnLayout {
             visible: !root.selectedChoiceIsSaved
             primary: true
             label: root.selectedCandidate
-              ? "Use “" + root.selectedCandidate.name + "” from Contacts"
-              : "Remember Contacts match"
+              ? "Use this Contacts name"
+              : "Use Contacts name"
             enabled: root.resolver && !root.resolver.loading && root.selectedCandidate !== null
             onClicked: root.resolver.choose(
               root.resolver.activeHandle, root.selectedCandidate.name, root.selectedCandidate.token)
