@@ -635,7 +635,7 @@ ColumnLayout {
       ColumnLayout {
         Layout.fillWidth: true
         visible: root.macReviewExpanded
-        spacing: root.space(8)
+        spacing: root.space(12)
 
       Text {
         Layout.fillWidth: true

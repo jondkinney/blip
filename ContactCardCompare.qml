@@ -30,7 +30,7 @@ ColumnLayout {
     editorInitialCard = null
   }
 
-  spacing: space(18)
+  spacing: space(20)
 
   function fontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
   function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
@@ -276,6 +276,7 @@ ColumnLayout {
 
   StageHeader {
     visible: root.editorCard === null
+    Layout.topMargin: root.space(4)
     step: "1"
     title: "Compare"
     detail: root.showSharedFields || root.sharedCount === 0
@@ -423,6 +424,7 @@ ColumnLayout {
 
   StageHeader {
     visible: root.editorCard === null
+    Layout.topMargin: root.space(14)
     step: "2"
     title: "Consolidate"
     detail: root.incompleteCardCount(root.comparison) === 0
@@ -529,6 +531,7 @@ ColumnLayout {
 
   StageHeader {
     visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
+    Layout.topMargin: root.space(14)
     step: "3"
     title: "Link"
     detail: "Ask Contacts whether it can link these exact source cards. Checking makes no changes."
