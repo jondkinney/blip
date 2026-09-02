@@ -158,6 +158,37 @@ function peopleForId(contacts, uid) {
   return people[0];
 }
 
+function nativeRecordForId(book, uid) {
+  const record = book.recordForUniqueId($(uid));
+  const value = ObjC.unwrap(record);
+  if (value === undefined || value === null)
+    throw new Error("the exact Contacts card is unavailable");
+  return record;
+}
+
+function deletePeopleById(personUids) {
+  // Contacts.app's scripting dictionary intentionally has no delete command.
+  // Use the local AddressBook framework—the same store Contacts.app uses—for
+  // the narrow, verified record deletion, then save all removals together.
+  ObjC.import("AddressBook");
+  const book = $.ABAddressBook.sharedAddressBook;
+  if (ObjC.unwrap(book.hasUnsavedChanges))
+    throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+  const records = personUids.map(function(uid) { return nativeRecordForId(book, uid); });
+  for (let i = records.length - 1; i >= 0; i--) {
+    if (!ObjC.unwrap(book.removeRecord(records[i])))
+      throw new Error("Contacts refused to delete a selected source card");
+  }
+  if (!ObjC.unwrap(book.save))
+    throw new Error("Contacts could not save the source-card deletion");
+  for (let i = 0; i < personUids.length; i++) {
+    const remaining = book.recordForUniqueId($(personUids[i]));
+    const value = ObjC.unwrap(remaining);
+    if (value !== undefined && value !== null)
+      throw new Error("Contacts did not delete a selected source card");
+  }
+}
+
 function normalizedValue(kind, value) {
   return kind === "email" ? normalizeEmail(value) : normalizePhone(value);
 }
@@ -468,14 +499,17 @@ function perform(request) {
     const targetBefore = describePerson(target);
     try {
       setCard(Contacts, target, request.card);
-      for (let i = sources.length - 1; i >= 0; i--) Contacts.delete(sources[i]);
       Contacts.save();
+      if (!sameCard(target, Object.assign({ displayName: describePerson(target).displayName }, request.card)))
+        throw new Error("Contacts did not save the merged target card");
+      deletePeopleById(request.sourceUids);
     } catch (error) {
-      try { setCard(Contacts, target, targetBefore); Contacts.save(); } catch (_) { /* original error wins */ }
+      try {
+        setCard(Contacts, target, targetBefore);
+        Contacts.save();
+      } catch (_) { /* original error wins; the pre-written receipt remains for recovery */ }
       throw error;
     }
-    if (!sameCard(target, Object.assign({ displayName: describePerson(target).displayName }, request.card)))
-      throw new Error("Contacts did not save the merged target card");
     return { ok: true, consolidated: true, card: describePerson(target), sourceCount: sources.length };
   }
   if (request.operation === "edit" || request.operation === "delete") {
@@ -485,11 +519,7 @@ function perform(request) {
     if (Contacts.unsaved())
       throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
     if (request.operation === "delete") {
-      Contacts.delete(editable);
-      Contacts.save();
-      let remains = false;
-      try { peopleForId(Contacts, request.personUid); remains = true; } catch (_) { remains = false; }
-      if (remains) throw new Error("Contacts did not delete the selected card");
+      deletePeopleById([request.personUid]);
       return { ok: true, deleted: true };
     }
     const before = describePerson(editable);

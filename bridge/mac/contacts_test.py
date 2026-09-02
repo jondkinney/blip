@@ -27,6 +27,14 @@ class Stdin:
 
 
 class ContactResolverTests(unittest.TestCase):
+    def test_card_deletion_uses_the_supported_native_contacts_store(self):
+        helper = os.path.join(os.path.dirname(__file__), "contact-repair.js")
+        with open(helper, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        self.assertNotIn("Contacts.delete(", source)
+        self.assertIn("book.removeRecord(", source)
+        self.assertIn("book.save", source)
+
     def test_handle_normalization(self):
         self.assertEqual(contacts.normalize_resolve_handle("+1 (555) 010-0001")[1], "5550100001")
         self.assertEqual(contacts.normalize_resolve_handle("Person@Example.COM")[1], "person@example.com")
