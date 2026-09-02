@@ -86,8 +86,8 @@ ColumnLayout {
   }
   function candidateDetail(candidate) {
     var cards = candidate.recordCount === 1 ? "1 contact card" : candidate.recordCount + " contact cards"
-    var accounts = candidate.sourceCount === 1 ? "1 account" : candidate.sourceCount + " accounts"
-    return cards + " · " + accounts + (candidate.hasPhoto ? " · has photo" : "")
+    var sources = candidate.sourceCount === 1 ? "1 source" : candidate.sourceCount + " sources"
+    return cards + " · " + sources + (candidate.hasPhoto ? " · has photo" : "")
   }
   function beginReview(handle) {
     if (!resolver || resolver.loading) return
@@ -146,7 +146,7 @@ ColumnLayout {
 
   Text {
     Layout.fillWidth: true
-    text: "Blip display names and Mac Contacts are two separate layers. Review a conversation, select a person, then explicitly save that display name in Blip. Mac repair is optional, verifies an exact card first, and changes Contacts only after a separate confirmation."
+    text: "Blip remembers which Contacts person belongs to each Messages handle. A Contacts resolution uses that person’s Mac name; only a name you type yourself is a Blip-only override. Editing a source card is a separate, confirmed action."
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: Qt.darker(root.foreground, 1.35)
@@ -157,7 +157,7 @@ ColumnLayout {
   Text {
     Layout.fillWidth: true
     visible: root.savedChoices.length > 0
-    text: "BLIP-ONLY DISPLAY OVERRIDES"
+    text: "SAVED NAME RESOLUTIONS"
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.25)
     font.family: root.fontFamily
@@ -196,7 +196,9 @@ ColumnLayout {
           }
           Text {
             Layout.fillWidth: true
-            text: String(modelData.handle || "") + " · saved in Blip only · Mac Contacts unchanged"
+            text: modelData.source === "contacts"
+              ? String(modelData.handle || "") + " · name from Mac Contacts · resolution remembered by Blip"
+              : String(modelData.handle || "") + " · custom Blip-only name"
             textFormat: Text.PlainText
             elide: Text.ElideMiddle
             color: Qt.darker(root.foreground, 1.4)
@@ -210,7 +212,7 @@ ColumnLayout {
           onClicked: root.beginReview(modelData.handle)
         }
         SmallButton {
-          label: "Remove Blip override"
+          label: modelData.source === "contacts" ? "Forget resolution" : "Remove custom name"
           danger: true
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.resolver.clearChoice(modelData.handle)
@@ -358,7 +360,9 @@ ColumnLayout {
             }
             Text {
               Layout.fillWidth: true
-              text: "BLIP DISPLAY NAME · SAVED LOCALLY"
+              text: root.activeChoice && root.activeChoice.source === "contacts"
+                ? "CONTACTS NAME · MATCH REMEMBERED BY BLIP"
+                : "CUSTOM BLIP-ONLY NAME"
               textFormat: Text.PlainText
               color: root.accent
               font.family: root.fontFamily
@@ -383,7 +387,7 @@ ColumnLayout {
       RowLayout {
         Layout.fillWidth: true
         spacing: root.space(8)
-        SectionHeading { label: "BLIP DISPLAY NAME" }
+        SectionHeading { label: "CHOOSE NAME SOURCE" }
         SmallButton {
           visible: root.activeChoice !== null
           label: "Done"
@@ -394,7 +398,7 @@ ColumnLayout {
 
       Text {
         Layout.fillWidth: true
-        text: "Selecting a row below changes nothing. Save only when the displayed name is right."
+        text: "Selecting a Contacts person changes nothing. Continue only when the person and displayed name are right."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -514,8 +518,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: root.selectedCandidate
               ? root.selectedChoiceIsSaved
-                ? "✓ “" + root.selectedCandidate.name + "” is already saved in Blip"
-                : "Ready to save “" + root.selectedCandidate.name + "” in Blip"
+                ? "✓ Blip is using “" + root.selectedCandidate.name + "” from Contacts"
+                : "Ready to use “" + root.selectedCandidate.name + "” from Contacts"
               : ""
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -527,8 +531,8 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: root.selectedChoiceIsSaved
-              ? "No save is needed—this is the current Blip display name. Blip did not edit Mac Contacts."
-              : "Nothing has changed yet. Saving writes only Blip’s portable identities.json file—not Contacts on the Mac."
+              ? "The Contacts name is unchanged. Blip only remembers that this person owns the Messages handle."
+              : "Nothing has changed yet. Continue to remember this Contacts match in Blip’s portable identities.json file."
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: Qt.darker(root.foreground, 1.35)
@@ -540,8 +544,8 @@ ColumnLayout {
             visible: !root.selectedChoiceIsSaved
             primary: true
             label: root.selectedCandidate
-              ? "Save “" + root.selectedCandidate.name + "” as the Blip display name"
-              : "Save selection in Blip"
+              ? "Use “" + root.selectedCandidate.name + "” from Contacts"
+              : "Remember Contacts match"
             enabled: root.resolver && !root.resolver.loading && root.selectedCandidate !== null
             onClicked: root.resolver.choose(
               root.resolver.activeHandle, root.selectedCandidate.name, root.selectedCandidate.token)
@@ -728,8 +732,10 @@ ColumnLayout {
                 Text {
                   Layout.fillWidth: true
                   text: "Card " + (sourceCard.index + 1) + " of " + sourceCandidate.modelData.recordCount
-                    + " · contact account " + sourceCard.modelData.accountNumber
-                    + " of " + sourceCandidate.modelData.sourceCount
+                    + " · " + sourceCard.modelData.sourceName
+                    + (sourceCandidate.modelData.sourceCount > 1
+                      ? " · source " + sourceCard.modelData.accountNumber
+                        + " of " + sourceCandidate.modelData.sourceCount : "")
                     + (sourceCard.modelData.matchCount > 1
                       ? " · " + sourceCard.modelData.matchCount + " matching fields" : "")
                     + (sourceCard.modelData.hasPhoto ? " · has photo" : "")
@@ -805,8 +811,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: root.resolver && root.resolver.repairPreview
               ? "Verified card " + root.resolver.repairPreview.cardNumber + " of "
-                + root.resolver.repairPreview.cardCount + " in contact account "
-                + root.resolver.repairPreview.accountNumber + ". This will remove "
+                + root.resolver.repairPreview.cardCount + " from "
+                + root.resolver.repairPreview.sourceName + ". This will remove "
                 + root.resolver.repairPreview.fieldCount + " matching "
                 + root.resolver.repairPreview.kind
                 + (root.resolver.repairPreview.fieldCount === 1 ? " field" : " fields")
@@ -905,7 +911,7 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.contactWrites
           && root.selectedCandidate !== null && !root.selectedChoiceIsSaved
-        text: "Save the correct Blip display name in step 1 before contact linking or automatic repair is enabled."
+        text: "Choose and remember the correct Contacts person in step 1 before contact linking or automatic repair is enabled."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: root.urgent

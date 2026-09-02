@@ -98,12 +98,15 @@ Item {
       if (!rawCard || typeof rawCard !== "object" || Array.isArray(rawCard)
           || !validToken(rawCard.token) || tokens[rawCard.token]) return null
       var account = Number(rawCard.accountNumber)
+      var sourceName = safeText(rawCard.sourceName, 120)
       if (!Number.isInteger(account) || account < 1 || account > 64) return null
+      if (sourceName === "") return null
       tokens[rawCard.token] = true
       accounts[account] = true
       cards.push({
         token: rawCard.token,
         accountNumber: account,
+        sourceName: sourceName,
         hasPhoto: rawCard.hasPhoto === true,
         matchCount: Number.isInteger(Number(rawCard.matchCount))
           && Number(rawCard.matchCount) >= 1 && Number(rawCard.matchCount) <= 8
@@ -130,11 +133,13 @@ Item {
     var cardNumber = Number(value.cardNumber)
     var cardCount = Number(value.cardCount)
     var accountNumber = Number(value.accountNumber)
+    var sourceName = safeText(value.sourceName, 120)
     if (handle === "" || name === "" || kind === ""
         || !Number.isInteger(fieldCount) || fieldCount < 1 || fieldCount > 8
         || !Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > 64
         || !Number.isInteger(cardCount) || cardCount < cardNumber || cardCount > 64
         || !Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > 64
+        || sourceName === ""
         || !Array.isArray(value.labels) || value.labels.length !== fieldCount) return null
     var labels = []
     for (var i = 0; i < value.labels.length; i++) {
@@ -144,7 +149,8 @@ Item {
     return {
       handle: handle, name: name, kind: kind, fieldCount: fieldCount,
       labels: labels, cardNumber: cardNumber, cardCount: cardCount,
-      accountNumber: accountNumber, writeEnabled: value.writeEnabled === true,
+      accountNumber: accountNumber, sourceName: sourceName,
+      writeEnabled: value.writeEnabled === true,
       token: pendingRepairToken, ownerToken: pendingOwnerToken
     }
   }
@@ -196,14 +202,17 @@ Item {
         || seenTokens[value.token]) return null
     var cardNumber = Number(value.cardNumber)
     var accountNumber = Number(value.accountNumber)
+    var sourceName = safeText(value.sourceName, 120)
     if (!Number.isInteger(cardNumber) || cardNumber !== expectedNumber
-        || !Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > 64) return null
+        || !Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > 64
+        || sourceName === "") return null
     var scalarKeys = ["displayName", "firstName", "middleName", "lastName", "nickname",
       "organization", "department", "jobTitle", "birthday", "note"]
     var scalarLimits = [160, 160, 160, 160, 160, 320, 320, 320, 10, 1000]
     if (!validRevision(value.revision)) return null
     var card = ({ token: value.token, revision: value.revision,
       cardNumber: cardNumber, accountNumber: accountNumber,
+      sourceName: sourceName,
       hasPhoto: value.hasPhoto === true })
     seenTokens[value.token] = true
     for (var i = 0; i < scalarKeys.length; i++) {
@@ -253,11 +262,13 @@ Item {
     var cardNumber = Number(value.cardNumber)
     var cardCount = Number(value.cardCount)
     var accountNumber = Number(value.accountNumber)
+    var sourceName = safeText(value.sourceName, 120)
     var sourceCardCount = Number(value.sourceCardCount)
     if (action === "" || handle === "" || name === "" || !validRevision(value.planHash)
         || !Number.isInteger(cardNumber) || cardNumber < 1 || cardNumber > 8
         || !Number.isInteger(cardCount) || cardCount < cardNumber || cardCount > 8
         || !Number.isInteger(accountNumber) || accountNumber < 1 || accountNumber > 64
+        || sourceName === ""
         || !Number.isInteger(sourceCardCount) || sourceCardCount < 0 || sourceCardCount > 7
         || !Array.isArray(value.changedFields) || value.changedFields.length < 1
         || value.changedFields.length > 13) return null
@@ -273,6 +284,7 @@ Item {
         && (!validRevision(value.revision) || safeText(value.displayName, 160) === "")) return null
     return { action: action, handle: handle, name: name, cardNumber: cardNumber,
       cardCount: cardCount, accountNumber: accountNumber, sourceCardCount: sourceCardCount,
+      sourceName: sourceName,
       changedFields: changed, planHash: value.planHash, writeEnabled: value.writeEnabled === true,
       applied: value.applied === true, undoToken: String(value.undoToken || ""),
       revision: String(value.revision || ""), displayName: safeText(value.displayName || "", 160) }
@@ -595,7 +607,9 @@ Item {
     if (currentOperation === "choose" || currentOperation === "custom") {
       var identity = safeIdentity(result.identity)
       if (!identity) { error = "Identity helper returned an invalid saved choice"; return }
-      notice = "Saved “" + identity.name + "” in Blip only; Mac Contacts was not changed"
+      notice = identity.source === "contacts"
+        ? "Saved the Contacts name resolution for “" + identity.name + "”; no contact was changed"
+        : "Saved custom Blip-only name “" + identity.name + "”; Mac Contacts was not changed"
       reloadAfterExit = true
       choicesChanged()
       return
@@ -605,7 +619,7 @@ Item {
       if (after === null) { error = "Identity helper returned an invalid saved-choice list"; return }
       identitiesJson = JSON.stringify(after)
       identities = after
-      notice = "Removed the Blip-only name"
+      notice = "Forgot the saved Blip name resolution"
       choicesChanged()
       return
     }
@@ -614,16 +628,18 @@ Item {
       var openedCard = Number(result.cardNumber)
       var openedCount = Number(result.cardCount)
       var openedAccount = Number(result.accountNumber)
+      var openedSource = safeText(result.sourceName, 120)
       if (result.opened !== true || openedName === ""
           || !Number.isInteger(openedCard) || openedCard < 1 || openedCard > 64
           || !Number.isInteger(openedCount) || openedCount < 1 || openedCount > 64
           || openedCard > openedCount
-          || !Number.isInteger(openedAccount) || openedAccount < 1 || openedAccount > 64) {
+          || !Number.isInteger(openedAccount) || openedAccount < 1 || openedAccount > 64
+          || openedSource === "") {
         error = "Contacts.app did not open the selected card"
         return
       }
       notice = "Opened “" + openedName + "” card " + openedCard + " of " + openedCount
-        + " in Contacts on the Mac. Nothing was changed."
+        + " from " + openedSource + " in Contacts on the Mac. Nothing was changed."
       return
     }
     if (currentOperation === "compare") {

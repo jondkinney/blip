@@ -254,7 +254,7 @@ ColumnLayout {
         Layout.fillWidth: true
         text: root.comparison
           ? root.comparison.cardCount + " source cards · " + root.comparison.sourceCount
-            + (root.comparison.sourceCount === 1 ? " account" : " accounts")
+            + (root.comparison.sourceCount === 1 ? " Contacts source" : " Contacts sources")
           : ""
         textFormat: Text.PlainText
         color: Qt.darker(root.foreground, 1.4)
@@ -345,7 +345,7 @@ ColumnLayout {
               font.pixelSize: root.fontSize(Style.font.caption)
               font.bold: true
             }
-            InfoPill { label: "ACCOUNT " + cardBox.modelData.accountNumber }
+            InfoPill { label: cardBox.modelData.sourceName }
           }
 
           RowLayout {
@@ -426,7 +426,7 @@ ColumnLayout {
     step: "2"
     title: "Consolidate"
     detail: root.incompleteCardCount(root.comparison) === 0
-      ? "Build one editable card from the discovered values, then choose which account keeps it."
+      ? "Build one editable card from the discovered values, then choose which Contacts source keeps it."
       : "The merged draft fills blanks and combines unique values; review every field before saving."
   }
 
@@ -507,7 +507,7 @@ ColumnLayout {
         spacing: root.space(8)
         Text {
           Layout.fillWidth: true
-          text: "Choose the source card—and therefore the contact account—that should remain."
+          text: "Choose the source card—and therefore the named Contacts source—that should remain."
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
           color: Qt.darker(root.foreground, 1.35)
@@ -518,7 +518,7 @@ ColumnLayout {
           model: root.comparison ? root.comparison.cards : []
           delegate: SmallButton {
             required property var modelData
-            label: "Merge into card " + modelData.cardNumber + "…"
+            label: "Merge into " + modelData.sourceName + " · card " + modelData.cardNumber + "…"
             enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
             onClicked: root.mergeInto(modelData)
           }
@@ -690,7 +690,7 @@ ColumnLayout {
 
   component InfoPill: Rectangle {
     property string label: ""
-    implicitWidth: pillText.implicitWidth + root.space(12)
+    implicitWidth: Math.min(pillText.implicitWidth + root.space(12), root.space(220))
     implicitHeight: pillText.implicitHeight + root.space(6)
     radius: height / 2
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
@@ -698,9 +698,14 @@ ColumnLayout {
     border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
     Text {
       id: pillText
-      anchors.centerIn: parent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: root.space(6)
+      anchors.rightMargin: root.space(6)
       text: parent.label
       textFormat: Text.PlainText
+      elide: Text.ElideRight
       color: Qt.darker(root.foreground, 1.25)
       font.family: root.fontFamily
       font.pixelSize: root.fontSize(Style.font.caption)

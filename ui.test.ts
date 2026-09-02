@@ -97,16 +97,16 @@ describe("QML safety invariants", () => {
   });
 
   test("identity repair separates harmless selection, Blip writes, and Mac review", () => {
-    expect(identitySettings).toContain("Selecting a row below changes nothing");
-    expect(identitySettings).toContain("Save “" + "\" + root.selectedCandidate.name");
-    expect(identitySettings).toContain(" in Blip only");
+    expect(identitySettings).toContain("Selecting a Contacts person changes nothing");
+    expect(identitySettings).toContain("Use “" + "\" + root.selectedCandidate.name");
+    expect(identitySettings).toContain("custom Blip-only name");
     expect(identitySettings).toContain("MAC CONTACTS · OPTIONAL");
     expect(identitySettings).toContain("Viewing or opening a card makes no change");
     expect(identitySettings).toContain("Check Mac Contacts again");
-    expect(identitySettings).toContain("is already saved in Blip");
-    expect(identitySettings).toContain("No save is needed");
+    expect(identitySettings).toContain("is using “");
+    expect(identitySettings).toContain("name from Mac Contacts");
     expect(identitySettings).toContain("Nothing has changed yet");
-    expect(identitySettings).toContain("as the Blip display name");
+    expect(identitySettings).toContain("remember this Contacts match");
     expect(identitySettings).not.toContain("Already saved in Blip\"");
     expect(identitySettings).not.toContain('label: "Use"');
     expect(identitySettings).not.toContain("Fix on Mac");
@@ -123,6 +123,8 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Review Contacts cards…");
     expect(identitySettings).toContain("sourceCandidate.cardsExpanded ? sourceCandidate.modelData.cards : []");
     expect(identitySettings).toContain("root.candidateForToken(saved.contactToken)");
+    expect(settings).toContain('text: "Saved as portable JSON files"');
+    expect(settings).toContain("Layout.alignment: Qt.AlignTop");
   });
 
   test("silent settings refreshes preserve stable models and visible state", () => {
@@ -156,6 +158,8 @@ describe("QML safety invariants", () => {
     expect(contactCompare).toContain("CONFIRM AN UPSTREAM CONTACTS CHANGE");
     expect(contactCompare).toContain("Checking makes no changes");
     expect(contactCompare).toContain("Edit in Blip…");
+    expect(contactCompare).toContain("cardBox.modelData.sourceName");
+    expect(identitySettings).toContain("sourceCard.modelData.sourceName");
     expect(contactCompare).toContain("Text.PlainText");
     expect(contactCompare).not.toContain("Array.isArray(card.phones)");
     expect(identities).toContain("function compareCards(handle, ownerToken)");
@@ -167,7 +171,7 @@ describe("QML safety invariants", () => {
 
   test("the contact workspace edits, deletes, and consolidates only after preview", () => {
     expect(contactCompare).toContain("ContactCardEditor");
-    expect(contactCompare).toContain("Merge into card ");
+    expect(contactCompare).toContain("Merge into \" + modelData.sourceName");
     expect(contactEditor).toContain("Review changes…");
     expect(contactEditor).toContain("Delete this source card…");
     expect(contactEditor).toContain("Review consolidation…");

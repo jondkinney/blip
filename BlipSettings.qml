@@ -62,11 +62,30 @@ FocusScope {
         Layout.fillWidth: true
         title: "Blip settings"
         meta: root.page === "contacts" ? "Contact names" : "Appearance"
-        detail: "Saved as portable JSON files"
+        detail: ""
         foreground: root.foreground
         fontFamily: root.fontFamily
       }
+      Rectangle {
+        Layout.alignment: Qt.AlignTop
+        implicitWidth: portableStatus.implicitWidth + root.space(14)
+        implicitHeight: root.space(28)
+        radius: root.corner(root.space(5))
+        color: "transparent"
+        border.width: 1
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
+        Text {
+          id: portableStatus
+          anchors.centerIn: parent
+          text: "Saved as portable JSON files"
+          textFormat: Text.PlainText
+          color: Qt.darker(root.foreground, 1.25)
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+        }
+      }
       PanelActionButton {
+        Layout.alignment: Qt.AlignTop
         focusable: true
         iconText: "×"
         tooltipText: "Close settings (Esc)"

@@ -118,10 +118,10 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         text: root.isMerge
-          ? "Card " + (root.card ? root.card.cardNumber : "") + " · account "
-            + (root.card ? root.card.accountNumber : "") + " will remain; the other source cards will be deleted after confirmation."
-          : "Card " + (root.card ? root.card.cardNumber : "") + " · contact account "
-            + (root.card ? root.card.accountNumber : "")
+          ? (root.card ? root.card.sourceName : "Contacts source") + " · card "
+            + (root.card ? root.card.cardNumber : "") + " will remain; the other source cards will be deleted after confirmation."
+          : (root.card ? root.card.sourceName : "Contacts source") + " · card "
+            + (root.card ? root.card.cardNumber : "")
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -402,13 +402,13 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         text: confirmBox.preview ? confirmBox.preview.action === "edit"
-          ? "Save changes to source card " + confirmBox.preview.cardNumber + " in contact account "
-            + confirmBox.preview.accountNumber + "?"
+          ? "Save changes to card " + confirmBox.preview.cardNumber + " in "
+            + confirmBox.preview.sourceName + "?"
           : confirmBox.preview.action === "delete"
-            ? "Permanently delete source card " + confirmBox.preview.cardNumber + " from contact account "
-              + confirmBox.preview.accountNumber + "?"
-            : "Keep source card " + confirmBox.preview.cardNumber + " in account "
-              + confirmBox.preview.accountNumber + " and delete the other "
+            ? "Permanently delete card " + confirmBox.preview.cardNumber + " from "
+              + confirmBox.preview.sourceName + "?"
+            : "Keep card " + confirmBox.preview.cardNumber + " in "
+              + confirmBox.preview.sourceName + " and delete the other "
               + confirmBox.preview.sourceCardCount + " source card(s)?"
           : ""
         textFormat: Text.PlainText; wrapMode: Text.WordWrap; color: root.foreground
