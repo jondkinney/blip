@@ -276,9 +276,11 @@ direct conversations whose phone number or email resolves to more than one
 Contacts name. Opening one replaces the list with a focused detail view; use
 **All conversations** or Escape to return. Identity repair is deliberately
 split into two stages. First, selecting a candidate changes nothing; a separate
-**Save “Name” in Blip only** action writes the explicit display choice to
-`~/.config/blip/identities.json`. It applies to pinned tiles, the thread list,
-notifications, and sender labels. The file is portable and safe to restore
+**Use “Name” from Contacts** action writes the explicit person-to-handle
+resolution to `~/.config/blip/identities.json`; it does not create a custom
+name or edit Contacts. A name typed into the custom field is the separate
+Blip-only override. Both apply to pinned tiles, the thread list, notifications,
+and sender labels. The file is portable and safe to restore
 alongside `preferences.json`, but it contains personal names and handles, so
 only put it in a private dotfiles repository.
 
@@ -289,7 +291,9 @@ Contacts object layer no longer exposes; Blip verifies and omits those rows so
 they cannot be mistaken for editable cards. **Manage N cards…** loads a
 bounded view of each active card's discovered name, organization,
 phone, email, address, URL, birthday, and notes, plus a de-duplicated combined
-view and a short missing-details checklist.
+view and a short missing-details checklist. Each card carries its bounded
+macOS source label—such as iCloud, Google, or On My Mac—while raw account IDs
+remain on the Mac.
 
 Each source card now has an **Edit in Blip…** workspace for names, organization
 and job fields, birthday, notes, labeled phone numbers, email addresses,

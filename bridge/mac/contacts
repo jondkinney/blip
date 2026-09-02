@@ -49,6 +49,7 @@ from typing import Iterable
 ADDRESSBOOK_DIR = os.path.expanduser(
     "~/Library/Application Support/AddressBook"
 )
+ACCOUNTS_DB = os.path.expanduser("~/Library/Accounts/Accounts4.sqlite")
 APPLE_EPOCH = 978307200  # 2001-01-01 UTC
 MAX_RESOLVE_INPUT_BYTES = 48 * 1024
 MAX_RESOLVE_OUTPUT_BYTES = 48 * 1024
@@ -57,6 +58,7 @@ MAX_MATCH_RECORDS = 64
 MAX_CANDIDATES = 8
 MAX_HANDLE_CHARS = 320
 MAX_NAME_CHARS = 160
+MAX_SOURCE_NAME_CHARS = 120
 MAX_REPAIR_FIELDS = 8
 MAX_REPAIR_INPUT_BYTES = 48 * 1024
 MAX_REPAIR_PROCESS_BYTES = 48 * 1024
@@ -91,6 +93,58 @@ def open_db(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     return con
+
+
+def source_identifier(path: str) -> str:
+    """Private stable id for one Contacts store; never emitted to Blip."""
+    parent = os.path.dirname(path)
+    if os.path.basename(os.path.dirname(parent)) == "Sources":
+        return os.path.basename(parent)
+    return "__on_my_mac__"
+
+
+def contact_source_names(paths: list[str]) -> dict[str, str]:
+    """Map private Contacts store ids to bounded user-facing account names."""
+    labels = {"__on_my_mac__": "On My Mac"}
+    wanted = {source_identifier(path) for path in paths}
+    if wanted == {"__on_my_mac__"}:
+        return labels
+    try:
+        info = os.lstat(ACCOUNTS_DB)
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid()):
+            return labels
+        with open_db(ACCOUNTS_DB) as con:
+            rows = con.execute(
+                """
+                SELECT a.ZIDENTIFIER AS identifier,
+                       a.ZACCOUNTDESCRIPTION AS description,
+                       a.ZUSERNAME AS username,
+                       p.ZACCOUNTDESCRIPTION AS parent_description,
+                       p.ZUSERNAME AS parent_username,
+                       t.ZACCOUNTTYPEDESCRIPTION AS account_type
+                FROM ZACCOUNT a
+                LEFT JOIN ZACCOUNTTYPE t ON t.Z_PK = a.ZACCOUNTTYPE
+                LEFT JOIN ZACCOUNT p ON p.Z_PK = a.ZPARENTACCOUNT
+                WHERE a.ZACTIVE = 1
+                """
+            ).fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return labels
+    for row in rows:
+        identifier = clean_text(row["identifier"], 200)
+        if identifier not in wanted:
+            continue
+        label = (
+            clean_text(row["parent_description"], MAX_SOURCE_NAME_CHARS)
+            or clean_text(row["description"], MAX_SOURCE_NAME_CHARS)
+            or clean_text(row["parent_username"], MAX_SOURCE_NAME_CHARS)
+            or clean_text(row["username"], MAX_SOURCE_NAME_CHARS)
+            or clean_text(row["account_type"], MAX_SOURCE_NAME_CHARS)
+        )
+        if label:
+            labels[identifier] = label
+    return labels
 
 
 def normalize_phone(s: str) -> str:
@@ -167,7 +221,9 @@ def matching_records(handle: object) -> tuple[str, str, list[dict]]:
     original, key, email = normalize_resolve_handle(handle)
     matches: dict[tuple[str, str], dict] = {}
     matched_fields = 0
-    for path in bounded_source_dbs():
+    paths = bounded_source_dbs()
+    source_names = contact_source_names(paths)
+    for path in paths:
         if matched_fields >= MAX_MATCH_RECORDS:
             raise RuntimeError("too many matching contact cards; refine them in Contacts")
         try:
@@ -227,12 +283,13 @@ def matching_records(handle: object) -> tuple[str, str, list[dict]]:
             uid = clean_text(row["uid"], 200)
             if not name or not uid:
                 continue
-            source = os.path.basename(os.path.dirname(path))
+            source = source_identifier(path)
             card_key = (source, uid)
             record = matches.setdefault(card_key, {
                 "name": name,
                 "uid": uid,
                 "source": source,
+                "sourceName": source_names.get(source, "Contacts"),
                 "modified": float(row["modified"] or 0),
                 "photo": row["photo"] == 1,
                 "kind": kind,
@@ -271,6 +328,13 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
             source: index + 1
             for index, source in enumerate(sorted({r["source"] for r in named_records}))
         }
+        source_names = {
+            source: next((clean_text(record.get("sourceName"), MAX_SOURCE_NAME_CHARS)
+                          for record in named_records
+                          if record["source"] == source
+                          and clean_text(record.get("sourceName"), MAX_SOURCE_NAME_CHARS)), "")
+            for source in source_numbers
+        }
         ordered_records = sorted(
             named_records,
             key=lambda r: (-int(r["photo"]), -r["modified"], r["uid"]),
@@ -285,6 +349,8 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
                 {
                     "token": card_token(key, record["source"], record["uid"]),
                     "accountNumber": source_numbers[record["source"]],
+                    "sourceName": source_names[record["source"]]
+                        or f"Contact source {source_numbers[record['source']]}",
                     "hasPhoto": record["photo"],
                     "matchCount": max(1, len(record.get("fields", []))),
                 }
@@ -730,12 +796,13 @@ def changed_card_fields(before: dict, after: dict) -> list[str]:
 
 def mutation_metadata(
     action: str, original: str, candidate: dict, card_number: int, account_number: int,
-    changed: list[str], plan_hash: str, source_count: int = 0,
+    source_name: str, changed: list[str], plan_hash: str, source_count: int = 0,
 ) -> dict:
     return {
         "action": action, "handle": original, "name": candidate["name"],
         "cardNumber": card_number, "cardCount": candidate["recordCount"],
-        "accountNumber": account_number, "sourceCardCount": source_count,
+        "accountNumber": account_number, "sourceName": source_name,
+        "sourceCardCount": source_count,
         "changedFields": changed, "planHash": plan_hash,
         "writeEnabled": write_gate_enabled(),
     }
@@ -753,6 +820,7 @@ def compare_candidate(handle: object, owner_token: object) -> dict:
             "revision": card_revision(detail),
             "cardNumber": index + 1,
             "accountNumber": candidate["cards"][index]["accountNumber"],
+            "sourceName": candidate["cards"][index]["sourceName"],
             "hasPhoto": record["photo"],
             **detail,
         })
@@ -780,7 +848,8 @@ def prepare_card_edit(
     }
     plan_hash = mutation_plan_hash("edit", public_plan)
     preview = mutation_metadata(
-        "edit", original, candidate, number, account, changed, plan_hash,
+        "edit", original, candidate, number, account,
+        candidate["cards"][number - 1]["sourceName"], changed, plan_hash,
     )
     private = {
         "personUid": record["uid"], "before": before, "after": draft,
@@ -823,7 +892,8 @@ def prepare_card_delete(
     public_plan = {"token": clean_text(token, 80), "revision": expected}
     plan_hash = mutation_plan_hash("delete", public_plan)
     preview = mutation_metadata(
-        "delete", original, candidate, number, account, ["entire source card"], plan_hash,
+        "delete", original, candidate, number, account,
+        candidate["cards"][number - 1]["sourceName"], ["entire source card"], plan_hash,
     )
     private = {
         "personUid": record["uid"], "before": before, "handle": original,
@@ -891,7 +961,8 @@ def prepare_consolidation(
     plan_hash = mutation_plan_hash("consolidate", public_plan)
     preview = mutation_metadata(
         "consolidate", original, candidate, target["index"] + 1,
-        candidate["cards"][target["index"]]["accountNumber"], changed, plan_hash,
+        candidate["cards"][target["index"]]["accountNumber"],
+        candidate["cards"][target["index"]]["sourceName"], changed, plan_hash,
         len(entries) - 1,
     )
     sources = [entry for entry in entries if entry is not target]
@@ -1040,6 +1111,7 @@ def inspect_repair(handle: object, token: object, owner_token: object) -> tuple[
         "cardNumber": card_number,
         "cardCount": candidate["recordCount"],
         "accountNumber": account_number,
+        "sourceName": candidate["cards"][card_number - 1]["sourceName"],
         "writeEnabled": write_gate_enabled(),
     }
     private = {
@@ -1190,6 +1262,7 @@ def _cmd_resolve(args):
             "cardNumber": selected_card_number,
             "cardCount": selected["recordCount"],
             "accountNumber": selected_account_number,
+            "sourceName": selected["cards"][selected_card_number - 1]["sourceName"],
         })
         return
     if operation == "compare":
@@ -1453,24 +1526,27 @@ def cmd_dump(args):
 
 def cmd_sources(args):
     paths = source_dbs()
+    labels = contact_source_names(paths)
     if args.json:
         rows = []
         for p in paths:
+            source_name = labels.get(source_identifier(p), "Contacts")
             try:
                 with open_db(p) as con:
                     n = con.execute("SELECT COUNT(*) FROM ZABCDRECORD").fetchone()[0]
-                rows.append({"path": p, "records": n, "size": os.path.getsize(p)})
+                rows.append({"name": source_name, "records": n, "size": os.path.getsize(p)})
             except sqlite3.DatabaseError:
-                rows.append({"path": p, "error": "open failed"})
+                rows.append({"name": source_name, "error": "open failed"})
         print(json.dumps(rows, indent=2))
         return
     for p in paths:
+        source_name = labels.get(source_identifier(p), "Contacts")
         try:
             with open_db(p) as con:
                 n = con.execute("SELECT COUNT(*) FROM ZABCDRECORD").fetchone()[0]
-            print(f"{n:>6} records  {os.path.getsize(p):>12} bytes  {p}")
+            print(f"{n:>6} records  {os.path.getsize(p):>12} bytes  {source_name}")
         except sqlite3.DatabaseError as e:
-            print(f"  ERROR ({e})  {p}")
+            print(f"  ERROR ({e})  {source_name}")
 
 
 def main() -> None:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Show each source card’s macOS Contacts account name (such as iCloud,
+  Google, or On My Mac) throughout review, comparison, editing, and destructive
+  confirmations. Name-resolution copy now distinguishes a remembered Contacts
+  match from a genuinely custom Blip-only display name.
 - Add a full in-Blip contact workspace: revision-pinned editing for names,
   work fields, birthday, notes, phones, email addresses, websites, and postal
   addresses; confirmed whole-card deletion; and editable multi-card
@@ -33,7 +37,7 @@
 
 **Changed**
 - Contact-name repair is now a guided two-stage flow: selecting a candidate is
-  harmless, the Blip-only save is explicit, and optional Mac repair lists and
+  harmless, remembering the Contacts match is explicit, and optional Mac repair lists and
   opens every exact source card separately. Generic one-click **Use** and
   **Fix on Mac** controls were removed.
 - Settings now separates Contacts from Appearance with tabs. Contact repair is

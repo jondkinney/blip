@@ -186,9 +186,9 @@ describe("contact-write opt-in", () => {
 describe("Mac candidate boundary", () => {
   test("validates a bounded candidate response", () => {
     const cards = [
-      { token: cardToken("b"), accountNumber: 1, hasPhoto: true, matchCount: 1 },
-      { token: cardToken("c"), accountNumber: 2, hasPhoto: false, matchCount: 1 },
-      { token: cardToken("d"), accountNumber: 2, hasPhoto: false, matchCount: 1 },
+      { token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: true, matchCount: 1 },
+      { token: cardToken("c"), accountNumber: 2, sourceName: "Google", hasPhoto: false, matchCount: 1 },
+      { token: cardToken("d"), accountNumber: 2, sourceName: "Google", hasPhoto: false, matchCount: 1 },
     ];
     expect(normalizeBridgeCandidates({
       ok: true,
@@ -212,11 +212,11 @@ describe("Mac candidate boundary", () => {
     }] }, "+15550100001")).toThrow("token");
     expect(() => normalizeBridgeCandidates({ ok: true, handle: "+15550100001", candidates: [{
       token, name: "Alex", recordCount: 2, sourceCount: 1, hasPhoto: false,
-      cards: [{ token: cardToken("b"), accountNumber: 1, hasPhoto: false }],
+      cards: [{ token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: false }],
     }] }, "+15550100001")).toThrow("source-card list");
     expect(() => normalizeBridgeCandidates({ ok: true, handle: "+15550100001", candidates: [{
       token, name: "Alex", recordCount: 1, sourceCount: 2, hasPhoto: false,
-      cards: [{ token: cardToken("b"), accountNumber: 1, hasPhoto: false }],
+      cards: [{ token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: false }],
     }] }, "+15550100001")).toThrow("account metadata");
   });
 
@@ -236,7 +236,7 @@ describe("Mac candidate boundary", () => {
           handle: "+15550100001",
           candidates: [{
             token, name: "Alex Rivera", recordCount: 1, sourceCount: 1, hasPhoto: false,
-            cards: [{ token: cardToken("b"), accountNumber: 1, hasPhoto: false }],
+            cards: [{ token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: false }],
           }],
         }),
         stderr: "",
@@ -262,7 +262,7 @@ describe("Mac candidate boundary", () => {
         pid: 1,
         stdout: JSON.stringify({
           ok: true, opened: true, name: "Alex Rivera",
-          cardNumber: 2, cardCount: 3, accountNumber: 1,
+          cardNumber: 2, cardCount: 3, accountNumber: 1, sourceName: "iCloud",
         }),
         stderr: "",
         error: undefined,
@@ -270,7 +270,7 @@ describe("Mac candidate boundary", () => {
     }) as any;
     expect(resolveOnMac("open", "+15550100001", exactToken, runner)).toEqual({
       handle: "+15550100001", opened: true, name: "Alex Rivera",
-      cardNumber: 2, cardCount: 3, accountNumber: 1,
+      cardNumber: 2, cardCount: 3, accountNumber: 1, sourceName: "iCloud",
     });
     expect(JSON.parse(capturedInput)).toEqual({
       operation: "open", handle: "+15550100001", token: exactToken,
@@ -281,7 +281,7 @@ describe("Mac candidate boundary", () => {
     const preview = {
       handle: "+15550100001", name: "Pat Rivera", kind: "phone",
       fieldCount: 1, labels: ["mobile"], cardNumber: 1, cardCount: 2,
-      accountNumber: 1, writeEnabled: true,
+      accountNumber: 1, sourceName: "iCloud", writeEnabled: true,
     };
     expect(normalizeRepairPreview(preview, "5550100001")).toEqual(preview);
     expect(() => normalizeRepairPreview({ ...preview, labels: [] }, preview.handle))
@@ -298,7 +298,8 @@ describe("Mac candidate boundary", () => {
       sourceCount: 2, writeEnabled: true,
       cards: [1, 2].map((number) => ({
         token: cardToken(number === 1 ? "b" : "c"), revision: cardToken(number === 1 ? "d" : "e"), cardNumber: number,
-        accountNumber: number, hasPhoto: number === 1,
+        accountNumber: number, sourceName: number === 1 ? "iCloud" : "Google",
+        hasPhoto: number === 1,
         displayName: "Alex Rivera", firstName: "Alex", middleName: "", lastName: "Rivera",
         nickname: "", organization: "Example", department: "", jobTitle: "",
         birthday: "--09-02", note: "",
@@ -331,7 +332,8 @@ describe("Mac candidate boundary", () => {
       sourceCount: 2, writeEnabled: true,
       cards: [1, 2].map((number) => ({
         token: cardToken(number === 1 ? "b" : "c"), revision: cardToken(number === 1 ? "d" : "e"), cardNumber: number,
-        accountNumber: number, hasPhoto: false, displayName: "Alex Rivera",
+        accountNumber: number, sourceName: number === 1 ? "iCloud" : "Google",
+        hasPhoto: false, displayName: "Alex Rivera",
         firstName: "Alex", middleName: "", lastName: "Rivera", nickname: "",
         organization: "", department: "", jobTitle: "", birthday: "", note: "",
         phones: [], emails: [], urls: [], addresses: [],
@@ -385,7 +387,7 @@ describe("Mac candidate boundary", () => {
     });
     const metadata = {
       action: "edit", handle: "+15550100001", name: "Alex Rivera", cardNumber: 1,
-      cardCount: 2, accountNumber: 1, sourceCardCount: 0,
+      cardCount: 2, accountNumber: 1, sourceName: "iCloud", sourceCardCount: 0,
       changedFields: ["nickname"], planHash, writeEnabled: true,
     };
     const captured: string[] = [];
@@ -415,7 +417,7 @@ describe("Mac candidate boundary", () => {
     const preview = {
       handle: "+15550100001", name: "Pat Rivera", kind: "phone",
       fieldCount: 1, labels: ["mobile"], cardNumber: 1, cardCount: 2,
-      accountNumber: 1, writeEnabled: true,
+      accountNumber: 1, sourceName: "iCloud", writeEnabled: true,
     };
     const captured: Array<{ args: string[]; input: string }> = [];
     const responses = [

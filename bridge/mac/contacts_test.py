@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -32,11 +33,45 @@ class ContactResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "valid phone"):
             contacts.normalize_resolve_handle("--not-a-phone")
 
+    def test_source_names_come_from_active_mac_accounts_without_exposing_ids(self):
+        with tempfile.TemporaryDirectory() as root:
+            accounts_db = os.path.join(root, "Accounts4.sqlite")
+            with sqlite3.connect(accounts_db) as con:
+                con.executescript("""
+                    CREATE TABLE ZACCOUNTTYPE (
+                        Z_PK INTEGER PRIMARY KEY,
+                        ZACCOUNTTYPEDESCRIPTION TEXT
+                    );
+                    CREATE TABLE ZACCOUNT (
+                        Z_PK INTEGER PRIMARY KEY,
+                        ZACTIVE INTEGER,
+                        ZACCOUNTTYPE INTEGER,
+                        ZPARENTACCOUNT INTEGER,
+                        ZIDENTIFIER TEXT,
+                        ZACCOUNTDESCRIPTION TEXT,
+                        ZUSERNAME TEXT
+                    );
+                    INSERT INTO ZACCOUNTTYPE VALUES (1, 'CardDAV');
+                    INSERT INTO ZACCOUNT VALUES (1, 1, 1, NULL, 'parent', 'Personal iCloud', 'private@example.com');
+                    INSERT INTO ZACCOUNT VALUES (2, 1, 1, 1, 'source-one', 'iCloud', 'private@example.com');
+                    INSERT INTO ZACCOUNT VALUES (3, 0, 1, NULL, 'inactive', 'Old account', 'old@example.com');
+                """)
+            paths = [
+                os.path.join(root, "AddressBook", "Sources", "source-one", "AddressBook-v22.abcddb"),
+                os.path.join(root, "AddressBook", "AddressBook-v22.abcddb"),
+            ]
+            with mock.patch.object(contacts, "ACCOUNTS_DB", accounts_db):
+                labels = contacts.contact_source_names(paths)
+            self.assertEqual(labels["source-one"], "Personal iCloud")
+            self.assertEqual(labels["__on_my_mac__"], "On My Mac")
+            self.assertNotIn("inactive", labels)
+            self.assertNotIn("private@example.com", json.dumps(labels))
+
     def test_candidates_group_duplicate_cards_by_name(self):
         records = [
-            {"name": "Alex Rivera", "uid": "one", "source": "a", "modified": 2, "photo": True},
-            {"name": "Alex Rivera", "uid": "two", "source": "b", "modified": 3, "photo": False},
-            {"name": "Pat Rivera", "uid": "three", "source": "b", "modified": 1, "photo": False},
+            {"name": "Alex Rivera", "uid": "one", "source": "a", "sourceName": "iCloud", "modified": 2, "photo": True},
+            {"name": "Alex Rivera", "uid": "two", "source": "b", "sourceName": "Google", "modified": 3, "photo": False},
+            {"name": "Pat Rivera", "uid": "three", "source": "b", "sourceName": "Google", "modified": 1, "photo": False},
         ]
         with mock.patch.object(
             contacts, "matching_records", return_value=("+15550100001", "5550100001", records)
@@ -52,6 +87,9 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual(len(candidates[0]["cards"]), 2)
         self.assertEqual(
             [card["accountNumber"] for card in candidates[0]["cards"]], [1, 2]
+        )
+        self.assertEqual(
+            [card["sourceName"] for card in candidates[0]["cards"]], ["iCloud", "Google"]
         )
         self.assertRegex(candidates[0]["cards"][0]["token"], r"^sha256:[0-9a-f]{64}$")
         self.assertNotEqual(candidates[0]["cards"][0]["token"], candidates[0]["token"])
@@ -112,7 +150,8 @@ class ContactResolverTests(unittest.TestCase):
         candidate = {
             "token": token, "name": name, "recordCount": 1,
             "sourceCount": 1, "hasPhoto": True,
-            "cards": [{"token": exact_token, "accountNumber": 1, "hasPhoto": True}],
+            "cards": [{"token": exact_token, "accountNumber": 1,
+                       "sourceName": "iCloud", "hasPhoto": True}],
         }
         by_name = {
             name.casefold(): [{
@@ -136,6 +175,7 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual(result["cardNumber"], 1)
         self.assertEqual(result["cardCount"], 1)
         self.assertEqual(result["accountNumber"], 1)
+        self.assertEqual(result["sourceName"], "iCloud")
 
     def test_open_rejects_an_unknown_card_token_without_launching_contacts(self):
         candidate = {
@@ -143,7 +183,7 @@ class ContactResolverTests(unittest.TestCase):
             "name": "Alex", "recordCount": 1, "sourceCount": 1, "hasPhoto": False,
             "cards": [{
                 "token": contacts.card_token("5550100001", "x", "uid"),
-                "accountNumber": 1, "hasPhoto": False,
+                "accountNumber": 1, "sourceName": "iCloud", "hasPhoto": False,
             }],
         }
         with mock.patch.object(contacts, "read_resolve_request", return_value={
@@ -210,8 +250,10 @@ class ContactResolverTests(unittest.TestCase):
             "name": "Alex Rivera", "recordCount": 2, "sourceCount": 2,
             "hasPhoto": True,
             "cards": [
-                {"token": "sha256:" + "b" * 64, "accountNumber": 1, "hasPhoto": True},
-                {"token": "sha256:" + "c" * 64, "accountNumber": 2, "hasPhoto": False},
+                {"token": "sha256:" + "b" * 64, "accountNumber": 1,
+                 "sourceName": "iCloud", "hasPhoto": True},
+                {"token": "sha256:" + "c" * 64, "accountNumber": 2,
+                 "sourceName": "Google", "hasPhoto": False},
             ],
         }
         records = [
@@ -235,6 +277,7 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual(result["cardCount"], 2)
         self.assertEqual(result["sourceCount"], 2)
         self.assertEqual(result["cards"][0]["accountNumber"], 1)
+        self.assertEqual(result["cards"][0]["sourceName"], "iCloud")
         self.assertRegex(result["cards"][0]["token"], r"^sha256:[0-9a-f]{64}$")
         self.assertRegex(result["cards"][0]["revision"], r"^sha256:[0-9a-f]{64}$")
         serialized = json.dumps(result)
@@ -307,7 +350,8 @@ class ContactResolverTests(unittest.TestCase):
         preview = {
             "handle": "+15550100001", "name": "Pat Rivera", "kind": "phone",
             "fieldCount": 1, "labels": ["mobile"], "cardNumber": 1,
-            "cardCount": 1, "accountNumber": 1, "writeEnabled": True,
+            "cardCount": 1, "accountNumber": 1, "sourceName": "iCloud",
+            "writeEnabled": True,
         }
         private = {
             "personUid": "person-1", "key": "5550100001", "kind": "phone",
@@ -373,7 +417,7 @@ class ContactResolverTests(unittest.TestCase):
         owner = "sha256:" + "a" * 64
         candidate = {
             "name": "Alex Rivera", "recordCount": 1, "sourceCount": 1,
-            "cards": [{"accountNumber": 1}],
+            "cards": [{"accountNumber": 1, "sourceName": "iCloud"}],
         }
         selected = (
             "+15550100001", "5550100001", candidate,
@@ -429,7 +473,8 @@ class ContactResolverTests(unittest.TestCase):
         tokens = [contacts.card_token(key, record["source"], record["uid"]) for record in records]
         candidate = {
             "name": "Alex Rivera", "recordCount": 2, "sourceCount": 2,
-            "cards": [{"accountNumber": 1}, {"accountNumber": 2}],
+            "cards": [{"accountNumber": 1, "sourceName": "iCloud"},
+                      {"accountNumber": 2, "sourceName": "Google"}],
         }
         revisions = [
             {"token": tokens[0], "revision": contacts.card_revision(base)},

@@ -81,6 +81,7 @@ export interface IdentityCandidate {
 export interface IdentitySourceCard {
   token: string;
   accountNumber: number;
+  sourceName: string;
   hasPhoto: boolean;
   matchCount: number;
 }
@@ -94,6 +95,7 @@ export interface ContactRepairPreview {
   cardNumber: number;
   cardCount: number;
   accountNumber: number;
+  sourceName: string;
   writeEnabled: boolean;
 }
 
@@ -132,6 +134,7 @@ export interface ContactCardDetail {
   revision: string;
   cardNumber: number;
   accountNumber: number;
+  sourceName: string;
   hasPhoto: boolean;
   displayName: string;
   firstName: string;
@@ -151,7 +154,7 @@ export interface ContactCardDetail {
 
 export type ContactCardDraft = Omit<
   ContactCardDetail,
-  "token" | "revision" | "cardNumber" | "accountNumber" | "hasPhoto" | "displayName"
+  "token" | "revision" | "cardNumber" | "accountNumber" | "sourceName" | "hasPhoto" | "displayName"
 >;
 
 export interface ContactMutationPreview {
@@ -161,6 +164,7 @@ export interface ContactMutationPreview {
   cardNumber: number;
   cardCount: number;
   accountNumber: number;
+  sourceName: string;
   sourceCardCount: number;
   changedFields: string[];
   planHash: string;
@@ -529,6 +533,10 @@ function optionalLabel(value: unknown): string {
   return value.replace(UNSAFE_TEXT, " ").replace(/\s+/g, " ").trim();
 }
 
+function contactSourceName(value: unknown): string {
+  return boundedString(value, "contact source name", 120);
+}
+
 function normalizeUndoToken(value: unknown): string {
   if (typeof value !== "string" || !UNDO_TOKEN.test(value)) throw new Error("undo token is invalid");
   return value;
@@ -573,7 +581,13 @@ export function normalizeBridgeCandidates(value: unknown, requestedHandle: strin
       );
       const matchCount = finiteInteger(card.matchCount ?? 1, "matching field count", 1, MAX_REPAIR_FIELDS);
       accounts.add(accountNumber);
-      return { token: cardToken, accountNumber, hasPhoto: card.hasPhoto === true, matchCount };
+      return {
+        token: cardToken,
+        accountNumber,
+        sourceName: contactSourceName(card.sourceName),
+        hasPhoto: card.hasPhoto === true,
+        matchCount,
+      };
     });
     if (accounts.size !== sourceCount)
       throw new Error("Contacts returned inconsistent account metadata");
@@ -616,6 +630,7 @@ export function normalizeRepairPreview(value: unknown, requestedHandle: string):
     accountNumber: finiteInteger(
       preview.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
     ),
+    sourceName: contactSourceName(preview.sourceName),
     writeEnabled: preview.writeEnabled === true,
   };
 }
@@ -676,6 +691,7 @@ function normalizeCardDetail(value: unknown, seen: Set<string>): ContactCardDeta
     revision: normalizeContactRevision(card.revision),
     cardNumber: finiteInteger(card.cardNumber, "card number", 1, MAX_COMPARE_CARDS),
     accountNumber: finiteInteger(card.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS),
+    sourceName: contactSourceName(card.sourceName),
     hasPhoto: card.hasPhoto === true,
     displayName: contactText(card.displayName, "display name", 160),
     firstName: contactText(card.firstName, "first name", 160),
@@ -803,6 +819,7 @@ function normalizeMutationPreview(
     accountNumber: finiteInteger(
       preview.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
     ),
+    sourceName: contactSourceName(preview.sourceName),
     sourceCardCount: finiteInteger(
       preview.sourceCardCount, "source card count", 0, MAX_COMPARE_CARDS - 1,
     ),
@@ -903,6 +920,7 @@ export function resolveOnMac(
   cardNumber?: number;
   cardCount?: number;
   accountNumber?: number;
+  sourceName?: string;
   preview?: ContactRepairPreview;
   removal?: ContactRemoval;
   undo?: ContactUndo;
@@ -963,6 +981,7 @@ export function resolveOnMac(
       accountNumber: finiteInteger(
         body.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
       ),
+      sourceName: contactSourceName(body.sourceName),
     };
   }
   if (operation === "compare") {
@@ -1159,6 +1178,7 @@ async function main(): Promise<void> {
         cardNumber: result.cardNumber,
         cardCount: result.cardCount,
         accountNumber: result.accountNumber,
+        sourceName: result.sourceName,
       });
       return;
     }
