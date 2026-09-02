@@ -17,6 +17,7 @@ Item {
 
   property var identities: []
   property var candidates: []
+  property var audit: null
   property var repairPreview: null
   property var comparison: null
   property var linkPreview: null
@@ -43,6 +44,9 @@ Item {
   property string identitiesJson: ""
   property string pendingReviewHandle: ""
   property bool refreshCandidatesAfterExit: false
+  property int pendingAuditCount: 0
+  property string pendingAuditFingerprint: ""
+  property string auditFingerprint: ""
 
   signal choicesChanged()
 
@@ -56,6 +60,13 @@ Item {
   function safeError(value) {
     return safeText(String(value || "Contact-name operation failed"), 180)
       || "Contact-name operation failed"
+  }
+
+  function handleKey(value) {
+    var handle = String(value || "")
+    if (handle.indexOf("@") >= 0) return "email:" + handle.toLowerCase()
+    var digits = handle.replace(/\D/g, "")
+    return "phone:" + (digits.length >= 10 ? digits.slice(-10) : digits)
   }
 
   function validToken(value) {
@@ -122,6 +133,45 @@ Item {
       hasPhoto: value.hasPhoto === true,
       cards: cards
     }
+  }
+
+  function safeAudit(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null
+    var handleCount = Number(value.handleCount)
+    var noMatchCount = Number(value.noMatchCount)
+    if (!Number.isInteger(handleCount) || handleCount < 1 || handleCount > 200
+        || handleCount !== pendingAuditCount
+        || !Number.isInteger(noMatchCount) || noMatchCount < 0 || noMatchCount > handleCount)
+      return null
+    var seen = ({})
+    function entries(raw, kind) {
+      if (!Array.isArray(raw) || raw.length > 200) return null
+      var result = []
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i]
+        if (!item || typeof item !== "object" || Array.isArray(item)) return null
+        var handle = root.safeText(item.handle, 320)
+        var key = root.handleKey(handle)
+        var options = root.validatedList(item.candidates, function(candidate) {
+          return root.safeCandidate(candidate)
+        }, 8)
+        if (handle === "" || seen[key] || options === null) return null
+        if (kind === "single" && (options.length !== 1 || options[0].recordCount !== 1)) return null
+        if (kind === "duplicate" && (options.length !== 1 || options[0].recordCount < 2)) return null
+        if (kind === "conflict" && options.length < 2) return null
+        seen[key] = true
+        result.push({ handle: handle, candidates: options })
+      }
+      return result
+    }
+    var singleCards = entries(value.singleCards, "single")
+    var duplicates = entries(value.duplicates, "duplicate")
+    var conflicts = entries(value.conflicts, "conflict")
+    if (singleCards === null || duplicates === null || conflicts === null
+        || noMatchCount + singleCards.length + duplicates.length + conflicts.length !== handleCount)
+      return null
+    return { handleCount: handleCount, noMatchCount: noMatchCount,
+      singleCards: singleCards, duplicates: duplicates, conflicts: conflicts }
   }
 
   function safeRepairPreview(value) {
@@ -366,6 +416,34 @@ Item {
     return start("candidates", { handle: activeHandle }, false)
   }
 
+  function auditContacts(handles) {
+    if (!Array.isArray(handles) || handles.length < 1 || handles.length > 200) return false
+    var accepted = []
+    var seen = ({})
+    for (var i = 0; i < handles.length; i++) {
+      var handle = safeText(handles[i], 320)
+      var key = handleKey(handle)
+      if (handle === "" || seen[key]) return false
+      seen[key] = true
+      accepted.push(handle)
+    }
+    audit = null
+    pendingAuditCount = accepted.length
+    pendingAuditFingerprint = JSON.stringify(Object.keys(seen).sort())
+    auditFingerprint = ""
+    notice = "Scanning matching Contacts cards; nothing will be changed…"
+    return start("audit", { handles: accepted }, false)
+  }
+
+  function clearAudit() {
+    if (worker.running) return false
+    audit = null
+    pendingAuditCount = 0
+    pendingAuditFingerprint = ""
+    auditFingerprint = ""
+    return true
+  }
+
   function dismissReview() {
     if (worker.running) return false
     activeHandle = ""
@@ -602,6 +680,17 @@ Item {
       notice = options.length === 0
         ? "No matching contact cards were found"
         : options.length === 1 ? "Contacts has one matching name" : "Contacts has conflicting names"
+      return
+    }
+    if (currentOperation === "audit") {
+      var audited = safeAudit(result.audit)
+      if (!audited) {
+        error = "Identity helper returned an invalid contact audit"
+        return
+      }
+      audit = audited
+      auditFingerprint = pendingAuditFingerprint
+      notice = "Contact cleanup scan finished; nothing was changed"
       return
     }
     if (currentOperation === "choose" || currentOperation === "custom") {

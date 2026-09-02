@@ -9,6 +9,7 @@
  *
  *   bun identities.ts read
  *   printf '%s' '{"handle":"+1555…"}' | bun identities.ts candidates
+ *   printf '%s' '{"handles":["+1555…","person@example.com"]}' | bun identities.ts audit
  *   printf '%s' '{"handle":"…","name":"…","token":"sha256:…"}' | bun identities.ts choose
  *   printf '%s' '{"handle":"…","name":"Family line"}' | bun identities.ts custom
  *   printf '%s' '{"handle":"…"}' | bun identities.ts clear
@@ -52,6 +53,7 @@ export const MAX_IDENTITY_CARDS = 64;
 export const MAX_REPAIR_FIELDS = 8;
 export const MAX_COMPARE_CARDS = 8;
 export const MAX_CARD_VALUES = 16;
+export const MAX_CONTACT_AUDIT_HANDLES = 200;
 export const MAX_BRIDGE_CONFIG_BYTES = 16 * 1024;
 export const MAX_HANDLE_CHARS = 320;
 export const MAX_NAME_CHARS = 160;
@@ -84,6 +86,19 @@ export interface IdentitySourceCard {
   sourceName: string;
   hasPhoto: boolean;
   matchCount: number;
+}
+
+export interface ContactAuditEntry {
+  handle: string;
+  candidates: IdentityCandidate[];
+}
+
+export interface ContactAudit {
+  handleCount: number;
+  noMatchCount: number;
+  singleCards: ContactAuditEntry[];
+  duplicates: ContactAuditEntry[];
+  conflicts: ContactAuditEntry[];
 }
 
 export interface ContactRepairPreview {
@@ -600,6 +615,96 @@ export function normalizeBridgeCandidates(value: unknown, requestedHandle: strin
       cards,
     };
   });
+}
+
+export function normalizeContactAudit(value: unknown, expectedHandleCount: number): ContactAudit {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid audit");
+  if (!Number.isInteger(expectedHandleCount) || expectedHandleCount < 1
+      || expectedHandleCount > MAX_CONTACT_AUDIT_HANDLES)
+    throw new Error("contact audit handle count is invalid");
+  const audit = value as Record<string, unknown>;
+  const handleCount = finiteInteger(
+    audit.handleCount, "audit handle count", 1, MAX_CONTACT_AUDIT_HANDLES,
+  );
+  if (handleCount !== expectedHandleCount)
+    throw new Error("Contacts returned an incomplete audit");
+  const noMatchCount = finiteInteger(
+    audit.noMatchCount, "audit no-match count", 0, MAX_CONTACT_AUDIT_HANDLES,
+  );
+  const seen = new Set<string>();
+  function entries(raw: unknown, kind: "single" | "duplicate" | "conflict"): ContactAuditEntry[] {
+    if (!Array.isArray(raw) || raw.length > MAX_CONTACT_AUDIT_HANDLES)
+      throw new Error("Contacts returned an invalid audit category");
+    return raw.map((item) => {
+      if (item === null || typeof item !== "object" || Array.isArray(item))
+        throw new Error("Contacts returned an invalid audit entry");
+      const entry = item as Record<string, unknown>;
+      const handle = normalizeHandle(entry.handle);
+      const key = identityKey(handle);
+      if (seen.has(key)) throw new Error("Contacts returned a duplicate audited handle");
+      seen.add(key);
+      const candidates = normalizeBridgeCandidates({
+        ok: true, handle, candidates: entry.candidates,
+      }, handle);
+      if (kind === "single" && (candidates.length !== 1 || candidates[0]!.recordCount !== 1))
+        throw new Error("Contacts returned an invalid single-card audit entry");
+      if (kind === "duplicate" && (candidates.length !== 1 || candidates[0]!.recordCount < 2))
+        throw new Error("Contacts returned an invalid duplicate-card audit entry");
+      if (kind === "conflict" && candidates.length < 2)
+        throw new Error("Contacts returned an invalid conflict audit entry");
+      return { handle, candidates };
+    });
+  }
+  const singleCards = entries(audit.singleCards, "single");
+  const duplicates = entries(audit.duplicates, "duplicate");
+  const conflicts = entries(audit.conflicts, "conflict");
+  if (noMatchCount + singleCards.length + duplicates.length + conflicts.length !== handleCount)
+    throw new Error("Contacts returned inconsistent audit totals");
+  return { handleCount, noMatchCount, singleCards, duplicates, conflicts };
+}
+
+export function auditContactsOnMac(value: unknown, runner: Runner = spawnSync): ContactAudit {
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CONTACT_AUDIT_HANDLES)
+    throw new Error("contact audit handle list is invalid");
+  const seen = new Set<string>();
+  const handles = value.map((raw) => {
+    const handle = normalizeHandle(raw);
+    const key = identityKey(handle);
+    if (seen.has(key)) throw new Error("contact audit contains a duplicate handle");
+    seen.add(key);
+    return handle;
+  });
+  const home = process.env.HOME ?? homedir();
+  const result: SpawnSyncReturns<string> = runner(
+    join(home, "bin", "contacts"),
+    ["--json", "resolve"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({ operation: "audit", handles }),
+      timeout: 35000,
+      maxBuffer: MAX_BRIDGE_OUTPUT_BYTES,
+    },
+  );
+  if (result.error) throw new Error(result.error.message || "Contacts bridge failed");
+  const stdout = String(result.stdout || "");
+  if (Buffer.byteLength(stdout) > MAX_BRIDGE_OUTPUT_BYTES)
+    throw new Error("Contacts returned too much data");
+  let response: unknown;
+  try { response = JSON.parse(stdout); }
+  catch { throw new Error("Contacts returned invalid JSON"); }
+  if (response === null || typeof response !== "object" || Array.isArray(response))
+    throw new Error("Contacts returned an invalid audit response");
+  const body = response as Record<string, unknown>;
+  if (result.status !== 0 || body.ok !== true)
+    throw new Error(safeError(body.error || "Contacts audit failed"));
+  const audit = normalizeContactAudit(body, handles.length);
+  const requestedKeys = new Set(handles.map(identityKey));
+  for (const entry of [...audit.singleCards, ...audit.duplicates, ...audit.conflicts]) {
+    if (!requestedKeys.has(identityKey(entry.handle)))
+      throw new Error("Contacts returned an unrequested audited handle");
+  }
+  return audit;
 }
 
 type Runner = typeof spawnSync;
@@ -1126,6 +1231,11 @@ async function main(): Promise<void> {
       });
       return;
     }
+    if (operation === "audit") {
+      const audit = auditContactsOnMac(request.handles);
+      emit({ ok: true, audit });
+      return;
+    }
     if (operation === "choose") {
       const handle = normalizeHandle(request.handle);
       const name = normalizeIdentityName(request.name);
@@ -1206,7 +1316,7 @@ async function main(): Promise<void> {
       return;
     }
     throw new Error(
-      "operation must be read, candidates, choose, custom, clear, open, compare, edit-prepare, "
+      "operation must be read, candidates, audit, choose, custom, clear, open, compare, edit-prepare, "
       + "edit, delete-prepare, delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo",
     );
   } catch (error) {

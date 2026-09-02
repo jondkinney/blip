@@ -21,14 +21,24 @@ ColumnLayout {
   property string selectedToken: ""
   property bool macReviewExpanded: false
   property bool namingExpanded: false
+  property bool auditActionableOnly: false
   readonly property bool editorActive: customField.activeFocus
   readonly property bool reviewActive: resolver && resolver.activeHandle !== ""
   readonly property var savedChoices: resolver ? resolver.identities : []
   readonly property bool hideShortCodeConversations: !preferences
     || preferences.hideShortCodeConversations
   readonly property var unresolvedWithShortCodes: unresolvedThreads(threads, true)
-  readonly property var unresolved: unresolvedThreads(threads, !hideShortCodeConversations)
+  readonly property var reviewableConversations: unresolvedThreads(threads, false)
+  readonly property var visibleConversations: hideShortCodeConversations
+    ? reviewableConversations : unresolvedWithShortCodes
+  readonly property var currentAudit: resolver && resolver.audit
+    && resolver.audit.handleCount === reviewableConversations.length
+    && resolver.auditFingerprint === reviewFingerprint() ? resolver.audit : null
+  readonly property var unresolved: auditActionableOnly && currentAudit
+    ? actionableConversations(reviewableConversations) : visibleConversations
   readonly property int hiddenShortCodeCount: shortCodeCount(unresolvedWithShortCodes)
+  readonly property int auditActionableCount: currentAudit
+    ? currentAudit.singleCards.length + currentAudit.duplicates.length + currentAudit.conflicts.length : 0
   readonly property var selectedCandidate: candidateForToken(selectedToken)
   readonly property var activeChoice: choiceForHandle(resolver ? resolver.activeHandle : "")
   readonly property bool selectedChoiceIsSaved: selectedCandidate && activeChoice
@@ -57,12 +67,80 @@ ColumnLayout {
   }
   function unresolvedDetail(thread) {
     var handle = String(thread && (thread.handle || thread.chat) || "")
+    var audited = auditEntryFor(handle)
+    if (audited) {
+      var suffix = thread && thread.pinned === true ? " · Pinned" : ""
+      if (audited.kind === "duplicate") {
+        var duplicate = audited.entry.candidates[0]
+        return duplicate.recordCount + " matching cards · " + auditSources(audited.entry)
+          + " · likely duplicate" + suffix
+      }
+      if (audited.kind === "conflict")
+        return audited.entry.candidates.length + " different Contacts names share this handle · review required" + suffix
+      return "One matching card for " + audited.entry.candidates[0].name + " · not a duplicate" + suffix
+    }
+    if (currentAudit && !likelyServiceHandle(handle))
+      return "No matching Mac contact card found" + (thread && thread.pinned === true ? " · Pinned" : "")
     var detail = likelyServiceHandle(handle)
       ? "Short code or service sender · usually no contact cleanup needed"
       : handle.indexOf("@") >= 0
         ? "Email address · no single Contacts name found"
         : "Phone number · no single Contacts name found"
     return detail + (thread && thread.pinned === true ? " · Pinned" : "")
+  }
+  function auditEntryFor(handle) {
+    if (!currentAudit) return null
+    var groups = [
+      { kind: "duplicate", entries: currentAudit.duplicates },
+      { kind: "conflict", entries: currentAudit.conflicts },
+      { kind: "single", entries: currentAudit.singleCards }
+    ]
+    for (var groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+      var entries = groups[groupIndex].entries
+      for (var i = 0; i < entries.length; i++) {
+        if (handleKey(entries[i].handle) === handleKey(handle))
+          return { kind: groups[groupIndex].kind, entry: entries[i] }
+      }
+    }
+    return null
+  }
+  function actionableConversations(value) {
+    if (!Array.isArray(value) || !currentAudit) return []
+    return value.filter(function(thread) {
+      return auditEntryFor(String(thread && (thread.handle || thread.chat) || "")) !== null
+    })
+  }
+  function reviewHandles() {
+    var result = []
+    for (var i = 0; i < reviewableConversations.length; i++)
+      result.push(String(reviewableConversations[i].chat || ""))
+    return result
+  }
+  function reviewFingerprint() {
+    var keys = []
+    for (var i = 0; i < reviewableConversations.length; i++)
+      keys.push(handleKey(reviewableConversations[i].chat || ""))
+    keys.sort()
+    return JSON.stringify(keys)
+  }
+  function auditSources(entry) {
+    var seen = ({})
+    var result = []
+    var candidates = entry && Array.isArray(entry.candidates) ? entry.candidates : []
+    for (var candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      var cards = candidates[candidateIndex].cards || []
+      for (var cardIndex = 0; cardIndex < cards.length; cardIndex++) {
+        var source = String(cards[cardIndex].sourceName || "")
+        if (source !== "" && !seen[source]) { seen[source] = true; result.push(source) }
+      }
+    }
+    return result.join(" + ")
+  }
+  function auditNames(entry) {
+    var result = []
+    var candidates = entry && Array.isArray(entry.candidates) ? entry.candidates : []
+    for (var i = 0; i < candidates.length; i++) result.push(candidates[i].name)
+    return result.join(" · ")
   }
   function unresolvedThreads(value, includeShortCodes) {
     if (!Array.isArray(value)) return []
@@ -172,6 +250,9 @@ ColumnLayout {
     }
     function onIdentitiesChanged() {
       if (root.choiceForHandle(root.resolver.activeHandle)) root.namingExpanded = false
+    }
+    function onAuditChanged() {
+      if (!root.resolver.audit) root.auditActionableOnly = false
     }
     function onCandidatesChanged() {
       var saved = root.activeChoice
@@ -294,14 +375,17 @@ ColumnLayout {
   Text {
     Layout.fillWidth: true
     visible: root.unresolvedWithShortCodes.length > 0
-    text: root.hideShortCodeConversations
-      ? root.unresolved.length + (root.unresolved.length === 1
+    text: root.auditActionableOnly && root.currentAudit
+      ? root.unresolved.length + " Contacts matches shown · "
+        + root.reviewableConversations.length + " phone/email conversations in the full queue."
+      : root.hideShortCodeConversations
+      ? root.reviewableConversations.length + (root.reviewableConversations.length === 1
         ? " phone/email conversation to review · "
         : " phone/email conversations to review · ")
         + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
           ? " short-code/service conversation hidden."
           : " short-code/service conversations hidden.")
-      : root.unresolved.length + " conversations shown · "
+      : root.visibleConversations.length + " conversations shown · "
         + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
           ? " looks like a short-code/service sender."
           : " look like short-code/service senders.")
@@ -341,6 +425,113 @@ ColumnLayout {
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: root.fontSize(Style.font.bodySmall)
+      }
+    }
+  }
+
+  Rectangle {
+    Layout.fillWidth: true
+    visible: root.reviewableConversations.length > 0
+    implicitHeight: auditContent.implicitHeight + root.space(24)
+    radius: root.corner(root.space(10))
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+    border.width: 1
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+    ColumnLayout {
+      id: auditContent
+      anchors.fill: parent
+      anchors.margins: root.space(12)
+      spacing: root.space(8)
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: root.space(8)
+        Text {
+          Layout.fillWidth: true
+          text: "FIND CONTACTS CLEANUP OPPORTUNITIES"
+          textFormat: Text.PlainText
+          color: root.currentAudit ? root.accent : root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+          font.bold: true
+        }
+        SmallButton {
+          label: root.currentAudit ? "Scan again" : root.resolver && root.resolver.currentOperation === "audit"
+            ? "Scanning…" : "Scan " + root.reviewableConversations.length + " conversations"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: root.resolver.auditContacts(root.reviewHandles())
+        }
+      }
+      Text {
+        Layout.fillWidth: true
+        text: root.currentAudit
+          ? "Read-only scan complete. Account names and matching fields are evidence, not permission to merge. Every contact change still opens its own preview and confirmation."
+          : "Run a read-only Mac Contacts scan to separate unmatched numbers, existing cards, likely duplicate cards, and handles assigned to conflicting names. The scan changes nothing."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.bodySmall)
+      }
+      Text {
+        Layout.fillWidth: true
+        visible: root.currentAudit !== null
+        text: root.currentAudit
+          ? root.currentAudit.noMatchCount + " no matching card · "
+            + root.currentAudit.singleCards.length + " single-card matches · "
+            + root.currentAudit.duplicates.length + " likely duplicates · "
+            + root.currentAudit.conflicts.length + " naming conflicts"
+          : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.bodySmall)
+        font.bold: true
+      }
+      Repeater {
+        model: root.currentAudit ? root.currentAudit.duplicates : []
+        AuditResultRow { required property var modelData; entry: modelData; kind: "duplicate" }
+      }
+      Repeater {
+        model: root.currentAudit ? root.currentAudit.conflicts : []
+        AuditResultRow { required property var modelData; entry: modelData; kind: "conflict" }
+      }
+      Text {
+        Layout.fillWidth: true
+        visible: root.currentAudit && root.currentAudit.singleCards.length > 0
+        text: root.currentAudit
+          ? root.currentAudit.singleCards.length + " conversations already have one matching card. They are not duplicates."
+          : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.35)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+      }
+      Text {
+        Layout.fillWidth: true
+        visible: root.currentAudit && root.currentAudit.noMatchCount > 0
+        text: root.currentAudit
+          ? root.currentAudit.noMatchCount + " conversations have no matching card. Blip recommends no bulk write for them."
+          : ""
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.35)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+      }
+      RowLayout {
+        Layout.fillWidth: true
+        visible: root.currentAudit !== null
+        Item { Layout.fillWidth: true }
+        SmallButton {
+          visible: root.auditActionableCount > 0
+          primary: root.auditActionableOnly
+          label: root.auditActionableOnly
+            ? "Show all " + root.reviewableConversations.length
+            : "Focus on " + root.auditActionableCount + " Contacts matches"
+          onClicked: root.auditActionableOnly = !root.auditActionableOnly
+        }
       }
     }
   }
@@ -1219,5 +1410,57 @@ ColumnLayout {
     }
     HoverHandler { enabled: toggle.enabled; cursorShape: Qt.PointingHandCursor }
     TapHandler { enabled: toggle.enabled; onTapped: toggle.toggled(!toggle.checked) }
+  }
+
+  component AuditResultRow: Rectangle {
+    id: auditRow
+    required property var entry
+    property string kind: "duplicate"
+    Layout.fillWidth: true
+    implicitHeight: auditRowContent.implicitHeight + root.space(16)
+    radius: root.corner(root.space(8))
+    color: kind === "conflict"
+      ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
+      : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.07)
+    border.width: 1
+    border.color: kind === "conflict" ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.38)
+      : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.34)
+    RowLayout {
+      id: auditRowContent
+      anchors.fill: parent
+      anchors.margins: root.space(8)
+      spacing: root.space(8)
+      ColumnLayout {
+        Layout.fillWidth: true
+        spacing: root.space(2)
+        Text {
+          Layout.fillWidth: true
+          text: auditRow.kind === "conflict"
+            ? "CONFLICT · " + root.auditNames(auditRow.entry)
+            : "LIKELY DUPLICATE · " + auditRow.entry.candidates[0].name
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          color: auditRow.kind === "conflict" ? root.urgent : root.accent
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+          font.bold: true
+        }
+        Text {
+          Layout.fillWidth: true
+          text: auditRow.entry.handle + (root.auditSources(auditRow.entry) === ""
+            ? "" : " · " + root.auditSources(auditRow.entry))
+          textFormat: Text.PlainText
+          elide: Text.ElideMiddle
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+        }
+      }
+      SmallButton {
+        label: auditRow.kind === "conflict" ? "Review conflict…" : "Review duplicate…"
+        enabled: root.resolver && !root.resolver.loading
+        onClicked: root.beginReview(auditRow.entry.handle)
+      }
+    }
   }
 }

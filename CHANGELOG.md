@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a read-only cleanup scan for conversations still shown as phone numbers
+  or email addresses. It separates unmatched handles, ordinary one-card
+  matches, same-name duplicate-card candidates, and naming conflicts; exposes
+  source-account patterns; and can focus the review queue on Contacts matches.
+  Duplicate/conflict reviews remain per-person, previewed, and confirmed—there
+  is no destructive bulk merge based only on account membership.
 - Clarify why unresolved conversations appear in Contacts settings, distinguish
   likely service short codes from people, and hide those short-code rows by
   default behind a portable preference toggle. The review queue now reports
