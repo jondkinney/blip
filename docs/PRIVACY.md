@@ -57,8 +57,9 @@ remove one revalidated phone/email field after a second confirmation, or ask
 Apple's UI to link/merge the exact compared cards after a separate confirmation
 that names the action. Field removal has a private seven-day Mac-local undo
 receipt. Apple's link/merge action may sync upstream and has no Blip undo.
-Blip never writes the private AddressBook SQLite files. Messages.app keeps your
-conversation history exactly as it always has.
+Whole-card deletion uses Apple's public Contacts framework after the same
+preview and revalidation. Blip never writes the private AddressBook SQLite
+files. Messages.app keeps your conversation history exactly as it always has.
 
 ## Permissions the Mac asks for
 

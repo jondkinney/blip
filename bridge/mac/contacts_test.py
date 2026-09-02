@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,13 +28,31 @@ class Stdin:
 
 
 class ContactResolverTests(unittest.TestCase):
-    def test_card_deletion_uses_the_supported_native_contacts_store(self):
-        helper = os.path.join(os.path.dirname(__file__), "contact-repair.js")
-        with open(helper, "r", encoding="utf-8") as stream:
-            source = stream.read()
-        self.assertNotIn("Contacts.delete(", source)
-        self.assertIn("book.removeRecord(", source)
-        self.assertIn("book.save", source)
+    def test_card_deletion_uses_the_current_contacts_framework(self):
+        script_helper = os.path.join(os.path.dirname(__file__), "contact-repair.js")
+        native_helper = os.path.join(os.path.dirname(__file__), "contact-delete.swift")
+        with open(script_helper, "r", encoding="utf-8") as stream:
+            script_source = stream.read()
+        with open(native_helper, "r", encoding="utf-8") as stream:
+            native_source = stream.read()
+        self.assertNotIn("Contacts.delete(", script_source)
+        self.assertNotIn("removeRecord(", script_source)
+        self.assertIn("CNSaveRequest()", native_source)
+        self.assertIn("save.delete(mutable)", native_source)
+
+    def test_native_deletion_uses_fixed_argv_and_private_stdin(self):
+        completed = (0, b'{"deletedCount":2,"ok":true}', b"")
+        file_info = os.stat_result((stat.S_IFREG | 0o700, 0, 0, 1, os.getuid(), 0, 1, 0, 0, 0))
+        with mock.patch.object(contacts.os, "lstat", return_value=file_info), mock.patch.object(
+            contacts, "run_bounded_process", return_value=completed,
+        ) as run:
+            result = contacts.run_contact_delete(["person-1", "person-2"])
+        argv, payload = run.call_args.args
+        self.assertEqual(len(argv), 1)
+        self.assertTrue(argv[0].endswith("contact-delete"))
+        self.assertNotIn(b"person-1", " ".join(argv).encode())
+        self.assertIn(b"person-1", payload)
+        self.assertEqual(result["deletedCount"], 2)
 
     def test_handle_normalization(self):
         self.assertEqual(contacts.normalize_resolve_handle("+1 (555) 010-0001")[1], "5550100001")
@@ -542,6 +561,53 @@ class ContactResolverTests(unittest.TestCase):
                     "+15550100001", "sha256:" + "a" * 64, tokens[0], changed,
                     contacts.card_draft(other),
                 )
+
+    def test_consolidation_updates_target_then_batches_exact_source_deletion(self):
+        before = {
+            "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+            "lastName": "Rivera", "nickname": "", "organization": "",
+            "department": "", "jobTitle": "", "birthday": "", "note": "",
+            "phones": [], "emails": [], "urls": [], "addresses": [],
+        }
+        draft = contacts.card_draft({
+            **before, "emails": [{"label": "home", "value": "alex@example.com"}],
+        })
+        after = {**before, **draft}
+        plan = "sha256:" + "d" * 64
+        preview = {
+            "action": "consolidate", "handle": "+15550100001", "name": "Alex Rivera",
+            "cardNumber": 1, "cardCount": 2, "accountNumber": 1, "sourceName": "iCloud",
+            "sourceCardCount": 1, "changedFields": ["email addresses"],
+            "planHash": plan, "writeEnabled": True,
+        }
+        private = {
+            "targetUid": "person-1", "targetBefore": before, "targetAfter": draft,
+            "sources": [{"personUid": "person-2", "card": before}],
+            "handle": "+15550100001", "name": "Alex Rivera", "planHash": plan,
+        }
+        events = []
+        with mock.patch.object(contacts, "require_write_gate"), mock.patch.object(
+            contacts, "prepare_consolidation", return_value=(preview, private),
+        ), mock.patch.object(
+            contacts, "write_undo_receipt",
+            side_effect=lambda value: events.append("receipt") or "undo:" + "e" * 32,
+        ), mock.patch.object(
+            contacts, "run_contact_repair",
+            side_effect=lambda value: events.append("target") or {
+                "ok": True, "updatedForConsolidation": True,
+                "sourceCount": 1, "card": after,
+            },
+        ), mock.patch.object(
+            contacts, "run_contact_delete",
+            side_effect=lambda value: events.append("delete") or {"ok": True, "deletedCount": 1},
+        ) as delete:
+            result = contacts.apply_consolidation(
+                "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
+                [], draft, plan,
+            )
+        self.assertEqual(events, ["receipt", "target", "delete"])
+        delete.assert_called_once_with(["person-2"])
+        self.assertTrue(result["applied"])
 
 
 if __name__ == "__main__":
