@@ -24,6 +24,7 @@ Item {
   property int sidebarWidth: 320
   property int avatarSize: 30
   property real cornerScale: 1.0
+  property bool hideShortCodeConversations: true
 
   property bool loaded: false
   property bool exists: false
@@ -43,7 +44,8 @@ Item {
       density: 1.0,
       sidebarWidth: 320,
       avatarSize: 30,
-      cornerScale: 1.0
+      cornerScale: 1.0,
+      hideShortCodeConversations: true
     }
   }
 
@@ -57,7 +59,8 @@ Item {
       density: Math.round(density * 100) / 100,
       sidebarWidth: Math.round(sidebarWidth),
       avatarSize: Math.round(avatarSize),
-      cornerScale: Math.round(cornerScale * 100) / 100
+      cornerScale: Math.round(cornerScale * 100) / 100,
+      hideShortCodeConversations: hideShortCodeConversations
     }
   }
 
@@ -82,6 +85,7 @@ Item {
     if (!finiteIn(value.sidebarWidth, 240, 520)) return false
     if (!finiteIn(value.avatarSize, 24, 64)) return false
     if (!finiteIn(value.cornerScale, 0, 2)) return false
+    if (typeof value.hideShortCodeConversations !== "boolean") return false
 
     var normalized = {
       schemaVersion: 1,
@@ -92,7 +96,8 @@ Item {
       density: Math.round(value.density * 100) / 100,
       sidebarWidth: Math.round(value.sidebarWidth),
       avatarSize: Math.round(value.avatarSize),
-      cornerScale: Math.round(value.cornerScale * 100) / 100
+      cornerScale: Math.round(value.cornerScale * 100) / 100,
+      hideShortCodeConversations: value.hideShortCodeConversations
     }
     var serialized = JSON.stringify(normalized)
     // Keep bindings and slider delegates untouched when the periodic bounded
@@ -106,6 +111,7 @@ Item {
     sidebarWidth = normalized.sidebarWidth
     avatarSize = normalized.avatarSize
     cornerScale = normalized.cornerScale
+    hideShortCodeConversations = normalized.hideShortCodeConversations
     lastSerialized = serialized
     return true
   }
@@ -195,6 +201,13 @@ Item {
     else if (key === "avatarSize" && finiteIn(number, 24, 64)) avatarSize = Math.round(number)
     else if (key === "cornerScale" && finiteIn(number, 0, 2)) cornerScale = number
     else return false
+    scheduleSave()
+    return true
+  }
+
+  function setBoolean(key, value) {
+    if (key !== "hideShortCodeConversations" || typeof value !== "boolean") return false
+    hideShortCodeConversations = value
     scheduleSave()
     return true
   }

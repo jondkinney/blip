@@ -43,6 +43,7 @@ export interface BlipPreferences {
   sidebarWidth: number;
   avatarSize: number;
   cornerScale: number;
+  hideShortCodeConversations: boolean;
 }
 
 export const DEFAULT_PREFERENCES: Readonly<BlipPreferences> = Object.freeze({
@@ -55,6 +56,7 @@ export const DEFAULT_PREFERENCES: Readonly<BlipPreferences> = Object.freeze({
   sidebarWidth: 320,
   avatarSize: 30,
   cornerScale: 1,
+  hideShortCodeConversations: true,
 });
 
 const NUMBER_RULES = {
@@ -93,6 +95,12 @@ function normalizedNumber(
   return Math.round(value * factor) / factor;
 }
 
+function normalizedBoolean(value: unknown, key: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") throw new Error(`${key} must be a boolean`);
+  return value;
+}
+
 /** Strict for known fields, tolerant of unknown future fields. */
 export function normalizePreferences(value: unknown): BlipPreferences {
   if (value === null || typeof value !== "object" || Array.isArray(value))
@@ -111,6 +119,11 @@ export function normalizePreferences(value: unknown): BlipPreferences {
     sidebarWidth: normalizedNumber(own(input, "sidebarWidth"), "sidebarWidth"),
     avatarSize: normalizedNumber(own(input, "avatarSize"), "avatarSize"),
     cornerScale: normalizedNumber(own(input, "cornerScale"), "cornerScale"),
+    hideShortCodeConversations: normalizedBoolean(
+      own(input, "hideShortCodeConversations"),
+      "hideShortCodeConversations",
+      true,
+    ),
   };
 }
 

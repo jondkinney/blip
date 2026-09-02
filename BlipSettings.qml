@@ -166,6 +166,7 @@ FocusScope {
           Layout.fillWidth: true
           resolver: identityResolver
           threads: root.threads
+          preferences: root.preferences
           foreground: root.foreground
           urgent: root.urgent
           accent: root.accent

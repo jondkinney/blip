@@ -260,7 +260,8 @@ symlinks and non-regular files.
   "density": 1,
   "sidebarWidth": 320,
   "avatarSize": 30,
-  "cornerScale": 1
+  "cornerScale": 1,
+  "hideShortCodeConversations": true
 }
 ```
 
@@ -272,7 +273,9 @@ settings view instead of being loaded into the long-lived shell.
 
 Settings has separate **Contacts** and **Appearance** tabs, so contact work
 does not share one long scroll with visual preferences. The Contacts tab lists
-direct conversations whose phone number or email needs attention. Opening one
+direct conversations that are still shown by phone number or email, explains
+why each one is present, and hides short-code/service senders by default with a
+portable toggle to reveal them. Opening one
 replaces the list with a focused detail view; use **All conversations** or
 Escape to return. The detail view then separates two independent tasks.
 

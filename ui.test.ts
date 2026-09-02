@@ -50,6 +50,17 @@ describe("QML safety invariants", () => {
   });
 
   test("contact management and optional Blip display preferences are separate flows", () => {
+    expect(identitySettings).toContain("CONVERSATIONS SHOWN AS NUMBERS");
+    expect(identitySettings).toContain("WHY THEY ARE HERE");
+    expect(identitySettings).toContain("Short codes and service senders can simply be left alone.");
+    expect(identitySettings).toContain("Review contact…");
+    expect(identitySettings).toContain("Review anyway…");
+    expect(identitySettings).toContain("Hide short-code senders");
+    expect(identitySettings).not.toContain(".slice(0, 12)");
+    expect(identitySettings).toContain("phone/email conversations to review");
+    expect(identitySettings).toContain("preferences.hideShortCodeConversations");
+    expect(identitySettings).toContain('preferences.setBoolean("hideShortCodeConversations", value)');
+    expect(settings).toContain("preferences: root.preferences");
     expect(identitySettings).toContain("What do you want to do? These are separate workflows.");
     expect(identitySettings).toContain("rowSpacing: root.space(12)");
     expect(identitySettings).toContain("columnSpacing: root.space(12)");
@@ -139,6 +150,15 @@ describe("QML safety invariants", () => {
     expect(contactEditor).toContain("CONFIRM CONTACTS CHANGE");
     expect(contactEditor).toContain("Save to Mac Contacts");
     expect(contactEditor).toContain("Merge and delete source cards");
+    expect(contactEditor).toContain("function cleanLabel(value)");
+    expect(contactEditor).toContain("originalLabel: text(item.label)");
+    expect(contactEditor).toContain('value === cleanLabel(original) ? original : value');
+    expect(contactEditor.indexOf('label: valueList.emptyLabel')).toBeGreaterThan(
+      contactEditor.indexOf('model: parent.model'),
+    );
+    expect(contactEditor.indexOf('label: "Add address"')).toBeGreaterThan(
+      contactEditor.indexOf('model: addresses'),
+    );
     expect(contactEditor).toContain("Text.PlainText");
     expect(identities).toContain("function prepareCardEdit(card, draft)");
     expect(identities).toContain("function prepareCardDelete(card)");
