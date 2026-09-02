@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix contact deletion and consolidation on macOS. Contacts.app does not expose
+  a scriptable delete command; Blip now applies the already previewed, exact-card
+  deletion through Apple's local AddressBook store and verifies every removal
+  before reporting success.
 - Replace the disabled edit form shown after contact-change preparation with a
   focused read-only review. Consolidation now names the card that will remain,
   the source cards that will be removed, the complete merged contact, and a
