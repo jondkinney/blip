@@ -50,7 +50,7 @@ ADDRESSBOOK_DIR = os.path.expanduser(
     "~/Library/Application Support/AddressBook"
 )
 APPLE_EPOCH = 978307200  # 2001-01-01 UTC
-MAX_RESOLVE_INPUT_BYTES = 4096
+MAX_RESOLVE_INPUT_BYTES = 48 * 1024
 MAX_RESOLVE_OUTPUT_BYTES = 48 * 1024
 MAX_RESOLVE_SOURCES = 64
 MAX_MATCH_RECORDS = 64
@@ -58,9 +58,9 @@ MAX_CANDIDATES = 8
 MAX_HANDLE_CHARS = 320
 MAX_NAME_CHARS = 160
 MAX_REPAIR_FIELDS = 8
-MAX_REPAIR_INPUT_BYTES = 16 * 1024
+MAX_REPAIR_INPUT_BYTES = 48 * 1024
 MAX_REPAIR_PROCESS_BYTES = 48 * 1024
-MAX_UNDO_BYTES = 8 * 1024
+MAX_UNDO_BYTES = 48 * 1024
 REPAIR_TIMEOUT_SECONDS = 25
 WRITE_GATE = os.path.expanduser("~/.blip/contact-writes-enabled")
 UNDO_DIR = os.path.expanduser("~/.blip/contact-undo")
@@ -68,6 +68,8 @@ UNDO_FILE = "latest.json"
 UNDO_TTL_SECONDS = 7 * 24 * 60 * 60
 _UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 _CONTACT_TOKEN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_PLAN_HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _UNDO_TOKEN = re.compile(r"undo:[0-9a-f]{32}\Z")
 _PERSON_UID = re.compile(r"[A-Za-z0-9._:-]{1,200}\Z")
 
@@ -643,29 +645,290 @@ def validated_card_detail(value: object) -> dict:
     return detail
 
 
-def compare_candidate(handle: object, owner_token: object) -> dict:
-    original, key, candidate, records = selected_candidate(handle, owner_token)
-    if not 2 <= len(records) <= 8:
-        raise ValueError("card comparison requires between two and eight active cards")
+def card_draft(detail: dict) -> dict:
+    """The writable subset of a described card; displayName is Contacts-derived."""
+    return {key: value for key, value in detail.items() if key != "displayName"}
+
+
+def validated_card_draft(value: object) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError("contact card draft is invalid")
+    # Reuse the strict detail validator with a derived-only placeholder.
+    draft = card_draft(validated_card_detail({"displayName": "", **value}))
+    if not any(draft[key] for key in ("firstName", "lastName", "nickname", "organization")):
+        raise ValueError("contact card needs a name, nickname, or organization")
+    return draft
+
+
+def card_revision(detail: dict) -> str:
+    payload = json.dumps(detail, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(
+        b"blip-contact-revision-v1\0" + payload.encode("utf-8")
+    ).hexdigest()
+
+
+def require_revision(value: object) -> str:
+    revision = clean_text(value, 80)
+    if not _REVISION.fullmatch(revision):
+        raise ValueError("contact card revision is invalid")
+    return revision
+
+
+def require_plan_hash(value: object) -> str:
+    plan = clean_text(value, 80)
+    if not _PLAN_HASH.fullmatch(plan):
+        raise ValueError("contact mutation plan is invalid")
+    return plan
+
+
+def mutation_plan_hash(action: str, value: dict) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(
+        b"blip-contact-mutation-v1\0" + action.encode("ascii") + b"\0" + payload.encode("utf-8")
+    ).hexdigest()
+
+
+def describe_records(records: list[dict]) -> list[dict]:
+    if not 1 <= len(records) <= 8:
+        raise ValueError("card details require between one and eight active cards")
     result = run_contact_repair({
         "operation": "describe", "personUids": [record["uid"] for record in records],
     })
     raw_cards = result.get("cards")
     if not isinstance(raw_cards, list) or len(raw_cards) != len(records):
-        raise RuntimeError("Contacts returned an invalid card comparison")
+        raise RuntimeError("Contacts returned an invalid card description")
+    return [validated_card_detail(raw) for raw in raw_cards]
+
+
+def owned_card(
+    handle: object, owner_token: object, token: object
+) -> tuple[str, str, dict, list[dict], dict, int, int]:
+    """Resolve a card only within the saved person's current active source cards."""
+    original, key, candidate, records = selected_candidate(handle, owner_token)
+    token_text = clean_text(token, 80)
+    if not _CONTACT_TOKEN.fullmatch(token_text):
+        raise ValueError("the selected card token is invalid")
+    for index, record in enumerate(records):
+        if card_token(key, record["source"], record["uid"]) == token_text:
+            return (
+                original, key, candidate, records, record, index + 1,
+                candidate["cards"][index]["accountNumber"],
+            )
+    raise ValueError("the selected card is no longer part of this contact")
+
+
+def changed_card_fields(before: dict, after: dict) -> list[str]:
+    labels = {
+        "firstName": "first name", "middleName": "middle name", "lastName": "last name",
+        "nickname": "nickname", "organization": "organization", "department": "department",
+        "jobTitle": "job title", "birthday": "birthday", "note": "notes",
+        "phones": "phone numbers", "emails": "email addresses", "urls": "websites",
+        "addresses": "postal addresses",
+    }
+    return [labels[key] for key in labels if before.get(key) != after.get(key)]
+
+
+def mutation_metadata(
+    action: str, original: str, candidate: dict, card_number: int, account_number: int,
+    changed: list[str], plan_hash: str, source_count: int = 0,
+) -> dict:
+    return {
+        "action": action, "handle": original, "name": candidate["name"],
+        "cardNumber": card_number, "cardCount": candidate["recordCount"],
+        "accountNumber": account_number, "sourceCardCount": source_count,
+        "changedFields": changed, "planHash": plan_hash,
+        "writeEnabled": write_gate_enabled(),
+    }
+
+
+def compare_candidate(handle: object, owner_token: object) -> dict:
+    original, key, candidate, records = selected_candidate(handle, owner_token)
+    if not 1 <= len(records) <= 8:
+        raise ValueError("contact management requires between one and eight active cards")
+    details = describe_records(records)
     cards = []
-    for index, (record, raw) in enumerate(zip(records, raw_cards)):
+    for index, (record, detail) in enumerate(zip(records, details)):
         cards.append({
             "token": card_token(key, record["source"], record["uid"]),
+            "revision": card_revision(detail),
             "cardNumber": index + 1,
             "accountNumber": candidate["cards"][index]["accountNumber"],
             "hasPhoto": record["photo"],
-            **validated_card_detail(raw),
+            **detail,
         })
     return {
         "handle": original, "name": candidate["name"], "cardCount": len(cards),
         "sourceCount": candidate["sourceCount"], "writeEnabled": write_gate_enabled(),
         "cards": cards,
+    }
+
+
+def prepare_card_edit(
+    handle: object, owner_token: object, token: object, revision: object, draft_value: object
+) -> tuple[dict, dict]:
+    original, _, candidate, _, record, number, account = owned_card(handle, owner_token, token)
+    before = describe_records([record])[0]
+    expected = require_revision(revision)
+    if card_revision(before) != expected:
+        raise ValueError("this card changed on the Mac; refresh before saving")
+    draft = validated_card_draft(draft_value)
+    changed = changed_card_fields(card_draft(before), draft)
+    if not changed:
+        raise ValueError("this draft does not change the contact card")
+    public_plan = {
+        "token": clean_text(token, 80), "revision": expected, "card": draft,
+    }
+    plan_hash = mutation_plan_hash("edit", public_plan)
+    preview = mutation_metadata(
+        "edit", original, candidate, number, account, changed, plan_hash,
+    )
+    private = {
+        "personUid": record["uid"], "before": before, "after": draft,
+        "handle": original, "name": candidate["name"], "cardToken": clean_text(token, 80),
+        "planHash": plan_hash,
+    }
+    return preview, private
+
+
+def apply_card_edit(
+    handle: object, owner_token: object, token: object, revision: object,
+    draft_value: object, expected_plan: object,
+) -> dict:
+    require_write_gate()
+    preview, private = prepare_card_edit(handle, owner_token, token, revision, draft_value)
+    if preview["planHash"] != require_plan_hash(expected_plan):
+        raise ValueError("the contact edit changed; preview it again before saving")
+    undo_token = write_undo_receipt({"action": "edit", **private})
+    result = run_contact_repair({
+        "operation": "edit", "personUid": private["personUid"],
+        "expectedCard": private["before"], "card": private["after"],
+    })
+    if result.get("edited") is not True:
+        raise RuntimeError("Contacts did not confirm the card edit")
+    after = validated_card_detail(result.get("card"))
+    return {
+        **preview, "applied": True, "undoToken": undo_token,
+        "revision": card_revision(after), "displayName": after["displayName"],
+    }
+
+
+def prepare_card_delete(
+    handle: object, owner_token: object, token: object, revision: object
+) -> tuple[dict, dict]:
+    original, _, candidate, _, record, number, account = owned_card(handle, owner_token, token)
+    before = describe_records([record])[0]
+    expected = require_revision(revision)
+    if card_revision(before) != expected:
+        raise ValueError("this card changed on the Mac; refresh before deleting")
+    public_plan = {"token": clean_text(token, 80), "revision": expected}
+    plan_hash = mutation_plan_hash("delete", public_plan)
+    preview = mutation_metadata(
+        "delete", original, candidate, number, account, ["entire source card"], plan_hash,
+    )
+    private = {
+        "personUid": record["uid"], "before": before, "handle": original,
+        "name": candidate["name"], "cardToken": clean_text(token, 80), "planHash": plan_hash,
+    }
+    return preview, private
+
+
+def apply_card_delete(
+    handle: object, owner_token: object, token: object, revision: object, expected_plan: object
+) -> dict:
+    require_write_gate()
+    preview, private = prepare_card_delete(handle, owner_token, token, revision)
+    if preview["planHash"] != require_plan_hash(expected_plan):
+        raise ValueError("the contact deletion changed; preview it again")
+    undo_token = write_undo_receipt({"action": "delete", **private})
+    result = run_contact_repair({
+        "operation": "delete", "personUid": private["personUid"],
+        "expectedCard": private["before"],
+    })
+    if result.get("deleted") is not True:
+        raise RuntimeError("Contacts did not confirm the card deletion")
+    return {**preview, "applied": True, "undoToken": undo_token}
+
+
+def prepare_consolidation(
+    handle: object, owner_token: object, target_token: object,
+    revisions_value: object, draft_value: object,
+) -> tuple[dict, dict]:
+    original, key, candidate, records = selected_candidate(handle, owner_token)
+    if not 2 <= len(records) <= 8:
+        raise ValueError("consolidation requires between two and eight active cards")
+    if not isinstance(revisions_value, list) or len(revisions_value) != len(records):
+        raise ValueError("contact card revision list is invalid")
+    supplied = {}
+    for item in revisions_value:
+        if not isinstance(item, dict):
+            raise ValueError("contact card revision is invalid")
+        token = clean_text(item.get("token"), 80)
+        revision = require_revision(item.get("revision"))
+        if not _CONTACT_TOKEN.fullmatch(token) or token in supplied:
+            raise ValueError("contact card revision is invalid")
+        supplied[token] = revision
+    details = describe_records(records)
+    entries = []
+    for index, (record, detail) in enumerate(zip(records, details)):
+        token = card_token(key, record["source"], record["uid"])
+        if supplied.get(token) != card_revision(detail):
+            raise ValueError("a source card changed on the Mac; refresh before merging")
+        entries.append({"token": token, "record": record, "detail": detail, "index": index})
+    target_text = clean_text(target_token, 80)
+    target = next((entry for entry in entries if entry["token"] == target_text), None)
+    if target is None:
+        raise ValueError("the merge target is no longer part of this contact")
+    draft = validated_card_draft(draft_value)
+    changed = changed_card_fields(card_draft(target["detail"]), draft)
+    if not changed:
+        changed = ["source-card consolidation"]
+    public_plan = {
+        "targetToken": target_text,
+        "revisions": [{"token": entry["token"], "revision": supplied[entry["token"]]}
+                      for entry in entries],
+        "card": draft,
+    }
+    plan_hash = mutation_plan_hash("consolidate", public_plan)
+    preview = mutation_metadata(
+        "consolidate", original, candidate, target["index"] + 1,
+        candidate["cards"][target["index"]]["accountNumber"], changed, plan_hash,
+        len(entries) - 1,
+    )
+    sources = [entry for entry in entries if entry is not target]
+    private = {
+        "targetUid": target["record"]["uid"], "targetBefore": target["detail"],
+        "targetAfter": draft, "sources": [
+            {"personUid": entry["record"]["uid"], "card": entry["detail"]} for entry in sources
+        ],
+        "handle": original, "name": candidate["name"], "planHash": plan_hash,
+    }
+    return preview, private
+
+
+def apply_consolidation(
+    handle: object, owner_token: object, target_token: object, revisions: object,
+    draft: object, expected_plan: object,
+) -> dict:
+    require_write_gate()
+    preview, private = prepare_consolidation(
+        handle, owner_token, target_token, revisions, draft,
+    )
+    if preview["planHash"] != require_plan_hash(expected_plan):
+        raise ValueError("the merge plan changed; preview it again")
+    undo_token = write_undo_receipt({"action": "consolidate", **private})
+    result = run_contact_repair({
+        "operation": "consolidate", "targetUid": private["targetUid"],
+        "sourceUids": [source["personUid"] for source in private["sources"]],
+        "expectedCards": [private["targetBefore"]]
+            + [source["card"] for source in private["sources"]],
+        "card": private["targetAfter"],
+    })
+    if result.get("consolidated") is not True or result.get("sourceCount") != len(private["sources"]):
+        raise RuntimeError("Contacts did not confirm the card consolidation")
+    after = validated_card_detail(result.get("card"))
+    return {
+        **preview, "applied": True, "undoToken": undo_token,
+        "revision": card_revision(after), "displayName": after["displayName"],
     }
 
 
@@ -808,6 +1071,68 @@ def remove_from_contact(handle: object, token: object, owner_token: object) -> d
 def undo_contact_removal(token: object) -> dict:
     require_write_gate()
     receipt = read_undo_receipt(token)
+    action = clean_text(receipt.get("action"), 40)
+    if action == "edit":
+        before = validated_card_detail(receipt.get("before"))
+        after_draft = validated_card_draft(receipt.get("after"))
+        # The saved response's display name is derived from the applied draft.
+        current = describe_records([{"uid": clean_text(receipt.get("personUid"), 200)}])[0]
+        if card_draft(current) != after_draft:
+            raise ValueError("this card changed after the Blip edit; undo was not applied")
+        result = run_contact_repair({
+            "operation": "edit", "personUid": clean_text(receipt.get("personUid"), 200),
+            "expectedCard": current, "card": card_draft(before),
+        })
+        if result.get("edited") is not True:
+            raise RuntimeError("Contacts did not confirm the edit undo")
+        clear_undo_receipt(receipt["token"])
+        return {
+            "restored": True, "alreadyPresent": False, "action": "edit",
+            "handle": clean_text(receipt.get("handle"), MAX_HANDLE_CHARS),
+            "name": clean_text(receipt.get("name"), MAX_NAME_CHARS), "cardCount": 1,
+            "fieldCount": max(1, len(changed_card_fields(after_draft, card_draft(before)))),
+        }
+    if action == "delete":
+        before = validated_card_detail(receipt.get("before"))
+        result = run_contact_repair({"operation": "restore", "card": card_draft(before)})
+        if result.get("restored") is not True:
+            raise RuntimeError("Contacts did not confirm the deleted-card restore")
+        clear_undo_receipt(receipt["token"])
+        return {
+            "restored": True, "alreadyPresent": False, "action": "delete",
+            "handle": clean_text(receipt.get("handle"), MAX_HANDLE_CHARS),
+            "name": clean_text(receipt.get("name"), MAX_NAME_CHARS), "cardCount": 1,
+            "fieldCount": 1,
+        }
+    if action == "consolidate":
+        target_before = validated_card_detail(receipt.get("targetBefore"))
+        target_after = validated_card_draft(receipt.get("targetAfter"))
+        raw_sources = receipt.get("sources")
+        if not isinstance(raw_sources, list) or not 1 <= len(raw_sources) < 8:
+            raise RuntimeError("contact merge undo receipt is invalid")
+        restore_cards = []
+        for source in raw_sources:
+            if not isinstance(source, dict):
+                raise RuntimeError("contact merge undo receipt is invalid")
+            restore_cards.append(card_draft(validated_card_detail(source.get("card"))))
+        current = describe_records([{"uid": clean_text(receipt.get("targetUid"), 200)}])[0]
+        if card_draft(current) != target_after:
+            raise ValueError("the merged card changed after consolidation; undo was not applied")
+        result = run_contact_repair({
+            "operation": "undo-consolidate",
+            "targetUid": clean_text(receipt.get("targetUid"), 200),
+            "expectedCard": current, "card": card_draft(target_before),
+            "restoreCards": restore_cards,
+        })
+        if result.get("restored") is not True or result.get("sourceCount") != len(restore_cards):
+            raise RuntimeError("Contacts did not confirm the merge undo")
+        clear_undo_receipt(receipt["token"])
+        return {
+            "restored": True, "alreadyPresent": False, "action": "consolidate",
+            "handle": clean_text(receipt.get("handle"), MAX_HANDLE_CHARS),
+            "name": clean_text(receipt.get("name"), MAX_NAME_CHARS),
+            "cardCount": len(restore_cards) + 1, "fieldCount": 1,
+        }
     kind = receipt.get("kind")
     key = clean_text(receipt.get("key"), 320)
     fields = validated_repair_fields(receipt.get("fields"), kind, key)
@@ -827,8 +1152,10 @@ def undo_contact_removal(token: object) -> dict:
     return {
         "restored": True,
         "alreadyPresent": result.get("alreadyPresent") is True,
+        "action": "field-removal",
         "handle": clean_text(receipt.get("handle"), MAX_HANDLE_CHARS),
         "name": clean_text(receipt.get("name"), MAX_NAME_CHARS),
+        "cardCount": 1,
         "fieldCount": field_count,
     }
 
@@ -869,6 +1196,48 @@ def _cmd_resolve(args):
         result = compare_candidate(request.get("handle"), request.get("ownerToken"))
         emit_resolve({"ok": True, **result})
         return
+    if operation == "edit-prepare":
+        preview, _ = prepare_card_edit(
+            request.get("handle"), request.get("ownerToken"), request.get("token"),
+            request.get("revision"), request.get("card"),
+        )
+        emit_resolve({"ok": True, "preview": preview})
+        return
+    if operation == "edit":
+        result = apply_card_edit(
+            request.get("handle"), request.get("ownerToken"), request.get("token"),
+            request.get("revision"), request.get("card"), request.get("planHash"),
+        )
+        emit_resolve({"ok": True, **result})
+        return
+    if operation == "delete-prepare":
+        preview, _ = prepare_card_delete(
+            request.get("handle"), request.get("ownerToken"), request.get("token"),
+            request.get("revision"),
+        )
+        emit_resolve({"ok": True, "preview": preview})
+        return
+    if operation == "delete":
+        result = apply_card_delete(
+            request.get("handle"), request.get("ownerToken"), request.get("token"),
+            request.get("revision"), request.get("planHash"),
+        )
+        emit_resolve({"ok": True, **result})
+        return
+    if operation == "merge-prepare":
+        preview, _ = prepare_consolidation(
+            request.get("handle"), request.get("ownerToken"), request.get("targetToken"),
+            request.get("revisions"), request.get("card"),
+        )
+        emit_resolve({"ok": True, "preview": preview})
+        return
+    if operation == "merge":
+        result = apply_consolidation(
+            request.get("handle"), request.get("ownerToken"), request.get("targetToken"),
+            request.get("revisions"), request.get("card"), request.get("planHash"),
+        )
+        emit_resolve({"ok": True, **result})
+        return
     if operation == "link-prepare":
         result = link_candidate(request.get("handle"), request.get("ownerToken"), False)
         emit_resolve({"ok": True, **result})
@@ -897,7 +1266,8 @@ def _cmd_resolve(args):
         emit_resolve({"ok": True, **result})
         return
     raise ValueError(
-        "operation must be candidates, open, compare, link-prepare, link, inspect, remove, or undo"
+        "operation must be candidates, open, compare, edit-prepare, edit, delete-prepare, "
+        "delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo"
     )
 
 

@@ -236,6 +236,7 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual(result["sourceCount"], 2)
         self.assertEqual(result["cards"][0]["accountNumber"], 1)
         self.assertRegex(result["cards"][0]["token"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(result["cards"][0]["revision"], r"^sha256:[0-9a-f]{64}$")
         serialized = json.dumps(result)
         self.assertNotIn("private-person-one", serialized)
         self.assertNotIn("private-person-two", serialized)
@@ -358,6 +359,108 @@ class ContactResolverTests(unittest.TestCase):
                     "+15550100001", "sha256:" + "a" * 64, correct["token"]
                 )
         repair.assert_not_called()
+
+    def test_card_edit_requires_revision_preview_and_writes_receipt_before_apply(self):
+        detail = {
+            "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+            "lastName": "Rivera", "nickname": "", "organization": "",
+            "department": "", "jobTitle": "", "birthday": "", "note": "",
+            "phones": [{"label": "mobile", "value": "+15550100001"}],
+            "emails": [], "urls": [], "addresses": [],
+        }
+        draft = contacts.card_draft({**detail, "nickname": "Lex"})
+        token = "sha256:" + "b" * 64
+        owner = "sha256:" + "a" * 64
+        candidate = {
+            "name": "Alex Rivera", "recordCount": 1, "sourceCount": 1,
+            "cards": [{"accountNumber": 1}],
+        }
+        selected = (
+            "+15550100001", "5550100001", candidate,
+            [{"uid": "person-1", "source": "source-1"}],
+            {"uid": "person-1", "source": "source-1"}, 1, 1,
+        )
+        events = []
+        edited = {**detail, "nickname": "Lex"}
+        with mock.patch.object(contacts, "owned_card", return_value=selected), mock.patch.object(
+            contacts, "describe_records", return_value=[detail]
+        ), mock.patch.object(contacts, "write_gate_enabled", return_value=True):
+            preview, _ = contacts.prepare_card_edit(
+                "+15550100001", owner, token, contacts.card_revision(detail), draft
+            )
+        self.assertEqual(preview["changedFields"], ["nickname"])
+        self.assertRegex(preview["planHash"], r"^sha256:[0-9a-f]{64}$")
+
+        with mock.patch.object(contacts, "require_write_gate"), mock.patch.object(
+            contacts, "prepare_card_edit", return_value=(preview, {
+                "personUid": "person-1", "before": detail, "after": draft,
+                "handle": "+15550100001", "name": "Alex Rivera", "cardToken": token,
+                "planHash": preview["planHash"],
+            })
+        ), mock.patch.object(
+            contacts, "write_undo_receipt",
+            side_effect=lambda value: events.append("receipt") or "undo:" + "c" * 32,
+        ), mock.patch.object(
+            contacts, "run_contact_repair",
+            side_effect=lambda value: events.append("automation") or {
+                "ok": True, "edited": True, "card": edited,
+            },
+        ):
+            result = contacts.apply_card_edit(
+                "+15550100001", owner, token, contacts.card_revision(detail), draft,
+                preview["planHash"],
+            )
+        self.assertEqual(events, ["receipt", "automation"])
+        self.assertTrue(result["applied"])
+
+    def test_consolidation_plan_pins_every_card_and_keeps_raw_ids_private(self):
+        base = {
+            "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+            "lastName": "Rivera", "nickname": "", "organization": "",
+            "department": "", "jobTitle": "", "birthday": "", "note": "",
+            "phones": [], "emails": [], "urls": [], "addresses": [],
+        }
+        other = {**base, "emails": [{"label": "home", "value": "alex@example.com"}]}
+        key = "5550100001"
+        records = [
+            {"uid": "private-1", "source": "source-1"},
+            {"uid": "private-2", "source": "source-2"},
+        ]
+        tokens = [contacts.card_token(key, record["source"], record["uid"]) for record in records]
+        candidate = {
+            "name": "Alex Rivera", "recordCount": 2, "sourceCount": 2,
+            "cards": [{"accountNumber": 1}, {"accountNumber": 2}],
+        }
+        revisions = [
+            {"token": tokens[0], "revision": contacts.card_revision(base)},
+            {"token": tokens[1], "revision": contacts.card_revision(other)},
+        ]
+        with mock.patch.object(
+            contacts, "selected_candidate",
+            return_value=("+15550100001", key, candidate, records),
+        ), mock.patch.object(
+            contacts, "describe_records", return_value=[base, other],
+        ), mock.patch.object(contacts, "write_gate_enabled", return_value=True):
+            preview, private = contacts.prepare_consolidation(
+                "+15550100001", "sha256:" + "a" * 64, tokens[0], revisions,
+                contacts.card_draft(other),
+            )
+        self.assertEqual(preview["action"], "consolidate")
+        self.assertEqual(preview["sourceCardCount"], 1)
+        self.assertNotIn("private-1", json.dumps(preview))
+        self.assertEqual(private["targetUid"], "private-1")
+
+        changed = [dict(item) for item in revisions]
+        changed[1]["revision"] = "sha256:" + "f" * 64
+        with mock.patch.object(
+            contacts, "selected_candidate",
+            return_value=("+15550100001", key, candidate, records),
+        ), mock.patch.object(contacts, "describe_records", return_value=[base, other]):
+            with self.assertRaisesRegex(ValueError, "source card changed"):
+                contacts.prepare_consolidation(
+                    "+15550100001", "sha256:" + "a" * 64, tokens[0], changed,
+                    contacts.card_draft(other),
+                )
 
 
 if __name__ == "__main__":

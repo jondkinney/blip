@@ -552,8 +552,9 @@ ColumnLayout {
               && root.selectedCandidate.recordCount > 1
             primary: true
             label: root.selectedCandidate
-              ? "Compare " + root.selectedCandidate.recordCount + " active Contacts cards…"
-              : "Compare active Contacts cards…"
+              ? root.selectedCandidate.recordCount === 1 ? "Manage contact…"
+                : "Manage " + root.selectedCandidate.recordCount + " source cards…"
+              : "Manage Contacts cards…"
             enabled: root.resolver && !root.resolver.loading
             onClicked: {
               root.macReviewExpanded = true
@@ -618,8 +619,8 @@ ColumnLayout {
         text: root.resolver && root.resolver.candidates.length > 1
           ? root.resolver.candidates.length + " people use this handle. Review the possible mismatch below."
           : root.selectedCandidate && root.selectedCandidate.recordCount > 1
-            ? root.selectedCandidate.recordCount + " source cards found. Compare differences, complete missing details, then link if Contacts allows it."
-            : "Blip and Contacts agree. Open the source card only if its details need work."
+            ? root.selectedCandidate.recordCount + " source cards found. Compare, edit, consolidate, delete, or link them from Blip."
+            : "Blip and Contacts agree. You can edit or delete the source card from Blip."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -684,11 +685,12 @@ ColumnLayout {
                 font.bold: true
               }
               SmallButton {
-                visible: sourceCandidate.intended && sourceCandidate.modelData.recordCount > 1
+                visible: sourceCandidate.intended
                 label: root.resolver && root.resolver.comparison
                   && root.resolver.comparison.ownerToken === sourceCandidate.modelData.token
-                  ? "Comparison open"
-                  : "Compare & link " + sourceCandidate.modelData.recordCount + " cards…"
+                  ? "Contact workspace open"
+                  : sourceCandidate.modelData.recordCount === 1 ? "Manage contact…"
+                    : "Manage " + sourceCandidate.modelData.recordCount + " cards…"
                 enabled: root.resolver && !root.resolver.loading && root.selectedChoiceIsSaved
                   && (!root.resolver.comparison
                     || root.resolver.comparison.ownerToken !== sourceCandidate.modelData.token)
@@ -865,7 +867,12 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: root.resolver
-              ? "Removed " + root.resolver.undoHandle + " from “" + root.resolver.undoName
+              ? (root.resolver.undoAction === "edit" ? "Edited one source card for “"
+                : root.resolver.undoAction === "delete" ? "Deleted one source card for “"
+                : root.resolver.undoAction === "consolidate"
+                  ? "Consolidated " + root.resolver.undoCardCount + " source cards for “"
+                  : "Removed " + root.resolver.undoHandle + " from “")
+                + root.resolver.undoName
                 + "”. Undo is available here now; its private Mac receipt expires in seven days."
               : ""
             textFormat: Text.PlainText
@@ -886,7 +893,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && !root.resolver.contactWrites
-        text: "Automatic contact repair is disabled. Set contact_writes=on locally and enable the separate owner-only gate on the Mac to use it. Opening cards remains read-only."
+        text: "Contact editing is disabled. Set contact_writes=on locally and enable the separate owner-only gate on the Mac to use it. Viewing and opening cards remain read-only."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -910,7 +917,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate !== null
-        text: "Opening a card makes no change. Handle removal asks for confirmation and saves an undo receipt."
+        text: "Viewing or opening a card makes no change. Editing, deletion, consolidation, and handle removal all require a separate confirmation."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a full in-Blip contact workspace: revision-pinned editing for names,
+  work fields, birthday, notes, phones, email addresses, websites, and postal
+  addresses; confirmed whole-card deletion; and editable multi-card
+  consolidation into a chosen source account. Every apply revalidates its
+  preview and saves a private bounded undo receipt first.
 - Add explicitly gated Mac Contacts repair from Blip: exact-card preview,
   second confirmation, supported Contacts.app removal, Mac-local undo receipt,
   and post-change revalidation. The restricted SSH key remains unable to turn
