@@ -720,11 +720,11 @@ describe("complete conversation list (mergeChats)", () => {
   };
   const chats = [
     { id: "+15551234567", name: null, service: "iMessage", last: "2026-08-31 20:00:00",
-      last_text: "hi", last_from_me: false, last_handle: "+15551234567", last_name: "Pat" },
+      last_text: "hi", last_from_me: false, last_handle: "+15551234567", last_name: "Pat", pinned_order: 1 },
     { id: "ce5a593a78af408282d61461ade89135", name: "LMT", service: "iMessage", last: "2026-08-31 19:00:00",
-      last_text: "Nice", last_from_me: false, last_handle: "+15550001111", last_name: "Sam" },
+      last_text: "Nice", last_from_me: false, last_handle: "+15550001111", last_name: "Sam", pinned_order: 0 },
     { id: "+15559990000", name: null, service: "SMS", last: "2026-08-20 09:00:00",
-      last_text: "old news", last_from_me: true, last_handle: "+15559990000", last_name: "Quiet Q" },
+      last_text: "old news", last_from_me: true, last_handle: "+15559990000", last_name: "Quiet Q", pinned_order: null },
   ];
 
   test("quiet conversations outside the window appear, newest first", () => {
@@ -735,11 +735,17 @@ describe("complete conversation list (mergeChats)", () => {
     expect(lmt.guid).toBe("any;+;ce5a");   // still sendable
     expect(lmt.unread).toBe(2);            // from the ledger
     expect(lmt.last_text).toBe("Nice");
+    expect(lmt.pinned).toBe(true);
+    expect(lmt.pin_order).toBe(0);
+    expect(out[0]!.pinned).toBe(true);   // window-derived rows are decorated too
   });
 
   test("a chat already covered by the window keeps the window's richer row", () => {
     const out = mergeChats([windowThread], chats, {}, {});
-    expect(out[0]).toBe(windowThread);
+    expect(out[0]!.count).toBe(windowThread.count);
+    expect(out[0]!.unread).toBe(windowThread.unread);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.pin_order).toBe(1);
   });
 
   test("DM rows are named from the contact, groups from the group cache", () => {

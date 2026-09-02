@@ -1,0 +1,1022 @@
+#!/usr/bin/env bun
+/**
+ * Portable, user-chosen identity resolutions for ambiguous Messages handles.
+ *
+ * QML talks only to this short-lived helper. The helper bounds and validates
+ * both ~/.config/blip/identities.json and the candidate response from the Mac,
+ * then writes choices atomically with mode 0600. Handles travel to the bridge
+ * over bounded stdin rather than argv.
+ *
+ *   bun identities.ts read
+ *   printf '%s' '{"handle":"+1555…"}' | bun identities.ts candidates
+ *   printf '%s' '{"handle":"…","name":"…","token":"sha256:…"}' | bun identities.ts choose
+ *   printf '%s' '{"handle":"…","name":"Family line"}' | bun identities.ts custom
+ *   printf '%s' '{"handle":"…"}' | bun identities.ts clear
+ *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts open
+ *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts compare
+ *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts link-prepare
+ *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts link
+ *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts inspect
+ *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts remove
+ *   printf '%s' '{"undoToken":"undo:…"}' | bun identities.ts undo
+ */
+
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join } from "node:path";
+
+export const MAX_IDENTITIES_BYTES = 48 * 1024;
+export const MAX_IDENTITY_REQUEST_BYTES = 4 * 1024;
+export const MAX_IDENTITY_OUTPUT_BYTES = 48 * 1024;
+export const MAX_BRIDGE_OUTPUT_BYTES = 48 * 1024;
+export const MAX_IDENTITY_ENTRIES = 64;
+export const MAX_IDENTITY_CANDIDATES = 8;
+export const MAX_IDENTITY_CARDS = 64;
+export const MAX_REPAIR_FIELDS = 8;
+export const MAX_COMPARE_CARDS = 8;
+export const MAX_CARD_VALUES = 16;
+export const MAX_BRIDGE_CONFIG_BYTES = 16 * 1024;
+export const MAX_HANDLE_CHARS = 320;
+export const MAX_NAME_CHARS = 160;
+
+export type IdentitySource = "contacts" | "custom";
+
+export interface IdentityChoice {
+  name: string;
+  source: IdentitySource;
+  contactToken?: string;
+}
+
+export interface IdentityConfig {
+  schemaVersion: 1;
+  identities: Record<string, IdentityChoice>;
+}
+
+export interface IdentityCandidate {
+  token: string;
+  name: string;
+  recordCount: number;
+  sourceCount: number;
+  hasPhoto: boolean;
+  cards: IdentitySourceCard[];
+}
+
+export interface IdentitySourceCard {
+  token: string;
+  accountNumber: number;
+  hasPhoto: boolean;
+  matchCount: number;
+}
+
+export interface ContactRepairPreview {
+  handle: string;
+  name: string;
+  kind: "phone" | "email";
+  fieldCount: number;
+  labels: string[];
+  cardNumber: number;
+  cardCount: number;
+  accountNumber: number;
+  writeEnabled: boolean;
+}
+
+export interface ContactRemoval extends ContactRepairPreview {
+  removed: true;
+  undoToken: string;
+}
+
+export interface ContactUndo {
+  restored: true;
+  alreadyPresent: boolean;
+  handle: string;
+  name: string;
+  fieldCount: number;
+}
+
+export interface ContactLabeledValue {
+  label: string;
+  value: string;
+}
+
+export interface ContactAddress {
+  label: string;
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+  countryCode: string;
+}
+
+export interface ContactCardDetail {
+  token: string;
+  cardNumber: number;
+  accountNumber: number;
+  hasPhoto: boolean;
+  displayName: string;
+  firstName: string;
+  middleName: string;
+  lastName: string;
+  nickname: string;
+  organization: string;
+  department: string;
+  jobTitle: string;
+  birthday: string;
+  note: string;
+  phones: ContactLabeledValue[];
+  emails: ContactLabeledValue[];
+  urls: ContactLabeledValue[];
+  addresses: ContactAddress[];
+}
+
+export interface ContactComparison {
+  handle: string;
+  name: string;
+  cardCount: number;
+  sourceCount: number;
+  writeEnabled: boolean;
+  cards: ContactCardDetail[];
+}
+
+export interface ContactLinkPreview {
+  handle: string;
+  name: string;
+  cardCount: number;
+  sourceCount: number;
+  writeEnabled: boolean;
+  action: "Link Selected Cards" | "Merge Selected Cards" | "Merge and Link Selected Cards";
+  ready: boolean;
+}
+
+export interface ContactLinkResult extends Omit<ContactLinkPreview, "ready"> {
+  linked: true;
+}
+
+export const EMPTY_IDENTITIES: Readonly<IdentityConfig> = Object.freeze({
+  schemaVersion: 1,
+  identities: Object.freeze({}),
+});
+
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
+const CONTACT_TOKEN = /^sha256:[0-9a-f]{64}$/;
+const UNDO_TOKEN = /^undo:[0-9a-f]{32}$/;
+
+function own(value: Record<string, unknown>, key: string): unknown {
+  return Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined;
+}
+
+function boundedString(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== "string") throw new Error(`${label} must be a string`);
+  if (value.length > maximum) throw new Error(`${label} is too long`);
+  const text = value.replace(UNSAFE_TEXT, " ").replace(/\s+/g, " ").trim();
+  if (!text) throw new Error(`${label} must not be empty`);
+  return text;
+}
+
+export function normalizeHandle(value: unknown): string {
+  const handle = boundedString(value, "handle", MAX_HANDLE_CHARS);
+  if (handle.includes("@")) {
+    const email = handle.toLowerCase();
+    if (email.length > 254 || !/^[^@\s]+@[^@\s]+$/.test(email))
+      throw new Error("handle is not a valid email address");
+    return handle;
+  }
+  if (!/^\+?[0-9][0-9 ()./-]{2,39}$/.test(handle))
+    throw new Error("handle is not a valid phone number");
+  const digits = handle.replace(/\D/g, "");
+  if (digits.length < 5) throw new Error("phone handle is too short");
+  return handle;
+}
+
+export function identityKey(value: unknown): string {
+  const handle = normalizeHandle(value);
+  if (handle.includes("@")) return `email:${handle.toLowerCase()}`;
+  const digits = handle.replace(/\D/g, "");
+  return `phone:${digits.length >= 10 ? digits.slice(-10) : digits}`;
+}
+
+export function normalizeIdentityName(value: unknown): string {
+  return boundedString(value, "name", MAX_NAME_CHARS);
+}
+
+function normalizeContactToken(value: unknown): string {
+  if (typeof value !== "string" || !CONTACT_TOKEN.test(value))
+    throw new Error("contact token is invalid");
+  return value;
+}
+
+export function normalizeIdentityConfig(value: unknown): IdentityConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("identities must be a JSON object");
+  const input = value as Record<string, unknown>;
+  if (own(input, "schemaVersion") !== 1) throw new Error("schemaVersion must be 1");
+  const rawEntries = own(input, "identities");
+  if (rawEntries === null || typeof rawEntries !== "object" || Array.isArray(rawEntries))
+    throw new Error("identities must be an object keyed by handle");
+  const pairs = Object.entries(rawEntries as Record<string, unknown>);
+  if (pairs.length > MAX_IDENTITY_ENTRIES)
+    throw new Error(`identities may contain at most ${MAX_IDENTITY_ENTRIES} choices`);
+
+  const normalized: Record<string, IdentityChoice> = {};
+  const seen = new Set<string>();
+  for (const [rawHandle, rawChoice] of pairs) {
+    const handle = normalizeHandle(rawHandle);
+    const key = identityKey(handle);
+    if (seen.has(key)) throw new Error("identities contains equivalent duplicate handles");
+    seen.add(key);
+    if (rawChoice === null || typeof rawChoice !== "object" || Array.isArray(rawChoice))
+      throw new Error(`identity for ${handle} must be an object`);
+    const choice = rawChoice as Record<string, unknown>;
+    const name = normalizeIdentityName(own(choice, "name"));
+    const source = own(choice, "source");
+    if (source !== "contacts" && source !== "custom")
+      throw new Error(`identity for ${handle} has an invalid source`);
+    const result: IdentityChoice = { name, source };
+    if (source === "contacts") result.contactToken = normalizeContactToken(own(choice, "contactToken"));
+    normalized[handle] = result;
+  }
+  return { schemaVersion: 1, identities: normalized };
+}
+
+export function parseIdentities(text: string): IdentityConfig {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("identities.json is not valid JSON");
+  }
+  return normalizeIdentityConfig(value);
+}
+
+function currentUid(): number {
+  const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+  if (uid < 0) throw new Error("cannot determine the current user");
+  return uid;
+}
+
+function openPinnedDirectory(path: string, create: boolean): number {
+  if (create) mkdirSync(path, { recursive: true, mode: 0o700 });
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  const info = fstatSync(fd);
+  if (!info.isDirectory()) {
+    closeSync(fd);
+    throw new Error("identity directory is not a directory");
+  }
+  if (info.uid !== currentUid()) {
+    closeSync(fd);
+    throw new Error("identity directory is not owned by the current user");
+  }
+  if ((info.mode & 0o077) !== 0) fchmodSync(fd, 0o700);
+  return fd;
+}
+
+function pinnedPath(directoryFd: number, name: string): string {
+  return `/proc/self/fd/${directoryFd}/${name}`;
+}
+
+export function readBoundedIdentityFile(path: string): string | null {
+  const directoryFd = openPinnedDirectory(dirname(path), false);
+  let fileFd = -1;
+  try {
+    try {
+      fileFd = openSync(
+        pinnedPath(directoryFd, basename(path)),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    const info = fstatSync(fileFd);
+    if (!info.isFile()) throw new Error("identities.json must be a regular file");
+    if (info.uid !== currentUid()) throw new Error("identities.json is not owned by the current user");
+    if (info.size > MAX_IDENTITIES_BYTES) throw new Error("identities.json is too large");
+
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const room = MAX_IDENTITIES_BYTES + 1 - total;
+      const chunk = Buffer.alloc(Math.min(4096, room));
+      const count = readSync(fileFd, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_IDENTITIES_BYTES) throw new Error("identities.json is too large");
+      chunks.push(chunk.subarray(0, count));
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    if (fileFd >= 0) closeSync(fileFd);
+    closeSync(directoryFd);
+  }
+}
+
+/** Read the small bridge config through one no-follow descriptor. */
+export function readBoundedBridgeConfig(path: string): string | null {
+  let directoryFd = -1;
+  let fileFd = -1;
+  try {
+    try { directoryFd = openPinnedDirectory(dirname(path), false); }
+    catch (error: any) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      fileFd = openSync(
+        pinnedPath(directoryFd, basename(path)),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    const info = fstatSync(fileFd);
+    if (!info.isFile()) throw new Error("bridge.conf must be a regular file");
+    if (info.uid !== currentUid()) throw new Error("bridge.conf is not owned by the current user");
+    if ((info.mode & 0o022) !== 0) throw new Error("bridge.conf is writable by another user");
+    if (info.size > MAX_BRIDGE_CONFIG_BYTES) throw new Error("bridge.conf is too large");
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.alloc(Math.min(4096, MAX_BRIDGE_CONFIG_BYTES + 1 - total));
+      const count = readSync(fileFd, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_BRIDGE_CONFIG_BYTES) throw new Error("bridge.conf is too large");
+      chunks.push(chunk.subarray(0, count));
+    }
+    return Buffer.concat(chunks, total).toString("utf8");
+  } finally {
+    if (fileFd >= 0) closeSync(fileFd);
+    if (directoryFd >= 0) closeSync(directoryFd);
+  }
+}
+
+export function bridgeConfigPath(): string {
+  const overridden = process.env.BLIP_BRIDGE_CONF;
+  if (overridden) {
+    if (!isAbsolute(overridden)) throw new Error("BLIP_BRIDGE_CONF must be absolute");
+    return overridden;
+  }
+  const home = process.env.HOME;
+  if (!home || !isAbsolute(home)) throw new Error("HOME must be an absolute path");
+  return join(home, ".config", "blip", "bridge.conf");
+}
+
+/** Fail closed: only an explicit, owner-controlled `contact_writes=on` enables UI writes. */
+export function contactWritesEnabled(path = bridgeConfigPath()): boolean {
+  let text: string | null;
+  try { text = readBoundedBridgeConfig(path); }
+  catch { return false; }
+  if (text === null) return false;
+  let enabled = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*/, "").trim();
+    if (!line || !line.includes("=")) continue;
+    const split = line.indexOf("=");
+    if (line.slice(0, split).trim() !== "contact_writes") continue;
+    let value = line.slice(split + 1).trim().toLowerCase();
+    if ((value.startsWith('"') && value.endsWith('"'))
+        || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    enabled = ["on", "true", "1", "yes"].includes(value);
+  }
+  return enabled;
+}
+
+export function readIdentities(path = identitiesPath()): { exists: boolean; config: IdentityConfig } {
+  let text: string | null;
+  try {
+    text = readBoundedIdentityFile(path);
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return { exists: false, config: { schemaVersion: 1, identities: {} } };
+    throw error;
+  }
+  if (text === null) return { exists: false, config: { schemaVersion: 1, identities: {} } };
+  return { exists: true, config: parseIdentities(text) };
+}
+
+function verifyReplaceableTarget(directoryFd: number, name: string): void {
+  try {
+    const info = lstatSync(pinnedPath(directoryFd, name));
+    if (!info.isFile()) throw new Error("identities.json must be a regular file");
+    if (info.uid !== currentUid()) throw new Error("identities.json is not owned by the current user");
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+export function writeIdentities(path: string, value: unknown): IdentityConfig {
+  if (!isAbsolute(path)) throw new Error("identity path must be absolute");
+  const config = normalizeIdentityConfig(value);
+  const sorted = Object.fromEntries(
+    Object.entries(config.identities).sort(([a], [b]) => a.localeCompare(b)),
+  );
+  const normalized: IdentityConfig = { schemaVersion: 1, identities: sorted };
+  const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
+  if (Buffer.byteLength(serialized) > MAX_IDENTITIES_BYTES)
+    throw new Error("normalized identities exceed the size limit");
+
+  const directoryFd = openPinnedDirectory(dirname(path), true);
+  const name = basename(path);
+  const tempName = `.${name}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  const tempPath = pinnedPath(directoryFd, tempName);
+  let tempFd = -1;
+  let renamed = false;
+  try {
+    verifyReplaceableTarget(directoryFd, name);
+    tempFd = openSync(
+      tempPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const bytes = Buffer.from(serialized, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(tempFd, bytes, offset, bytes.length - offset);
+    fchmodSync(tempFd, 0o600);
+    fsyncSync(tempFd);
+    closeSync(tempFd);
+    tempFd = -1;
+    renameSync(tempPath, pinnedPath(directoryFd, name));
+    renamed = true;
+    chmodSync(pinnedPath(directoryFd, name), 0o600);
+    fsyncSync(directoryFd);
+    return normalized;
+  } finally {
+    if (tempFd >= 0) closeSync(tempFd);
+    if (!renamed) {
+      try { unlinkSync(tempPath); } catch { /* no temporary file */ }
+    }
+    closeSync(directoryFd);
+  }
+}
+
+export function identityNameFor(handle: unknown, config: IdentityConfig): string | null {
+  let key: string;
+  try { key = identityKey(handle); } catch { return null; }
+  for (const [candidateHandle, choice] of Object.entries(config.identities)) {
+    if (identityKey(candidateHandle) === key) return choice.name;
+  }
+  return null;
+}
+
+export function safeReadIdentityConfig(path = identitiesPath()): IdentityConfig {
+  try { return readIdentities(path).config; }
+  catch { return { schemaVersion: 1, identities: {} }; }
+}
+
+function finiteInteger(value: unknown, label: string, low: number, high: number): number {
+  if (!Number.isInteger(value) || Number(value) < low || Number(value) > high)
+    throw new Error(`${label} is invalid`);
+  return Number(value);
+}
+
+function optionalLabel(value: unknown): string {
+  if (typeof value !== "string" || value.length > 80) throw new Error("contact label is invalid");
+  return value.replace(UNSAFE_TEXT, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeUndoToken(value: unknown): string {
+  if (typeof value !== "string" || !UNDO_TOKEN.test(value)) throw new Error("undo token is invalid");
+  return value;
+}
+
+export function normalizeBridgeCandidates(value: unknown, requestedHandle: string): IdentityCandidate[] {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid response");
+  const response = value as Record<string, unknown>;
+  if (response.ok !== true) {
+    throw new Error(safeError(response.error || "Contacts could not resolve this handle"));
+  }
+  if (identityKey(response.handle) !== identityKey(requestedHandle))
+    throw new Error("Contacts returned a different handle");
+  if (!Array.isArray(response.candidates) || response.candidates.length > MAX_IDENTITY_CANDIDATES)
+    throw new Error("Contacts returned too many candidates");
+  const seen = new Set<string>();
+  let cardCount = 0;
+  return response.candidates.map((raw: unknown) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+      throw new Error("Contacts returned an invalid candidate");
+    const candidate = raw as Record<string, unknown>;
+    const token = normalizeContactToken(candidate.token);
+    if (seen.has(token)) throw new Error("Contacts returned a duplicate candidate");
+    seen.add(token);
+    const recordCount = finiteInteger(candidate.recordCount, "record count", 1, MAX_IDENTITY_CARDS);
+    const sourceCount = finiteInteger(candidate.sourceCount, "source count", 1, MAX_IDENTITY_CARDS);
+    if (!Array.isArray(candidate.cards) || candidate.cards.length !== recordCount)
+      throw new Error("Contacts returned an invalid source-card list");
+    cardCount += candidate.cards.length;
+    if (cardCount > MAX_IDENTITY_CARDS) throw new Error("Contacts returned too many source cards");
+    const accounts = new Set<number>();
+    const cards = candidate.cards.map((rawCard: unknown): IdentitySourceCard => {
+      if (rawCard === null || typeof rawCard !== "object" || Array.isArray(rawCard))
+        throw new Error("Contacts returned an invalid source card");
+      const card = rawCard as Record<string, unknown>;
+      const cardToken = normalizeContactToken(card.token);
+      if (seen.has(cardToken)) throw new Error("Contacts returned a duplicate card token");
+      seen.add(cardToken);
+      const accountNumber = finiteInteger(
+        card.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
+      );
+      const matchCount = finiteInteger(card.matchCount ?? 1, "matching field count", 1, MAX_REPAIR_FIELDS);
+      accounts.add(accountNumber);
+      return { token: cardToken, accountNumber, hasPhoto: card.hasPhoto === true, matchCount };
+    });
+    if (accounts.size !== sourceCount)
+      throw new Error("Contacts returned inconsistent account metadata");
+    return {
+      token,
+      name: normalizeIdentityName(candidate.name),
+      recordCount,
+      sourceCount,
+      hasPhoto: candidate.hasPhoto === true,
+      cards,
+    };
+  });
+}
+
+type Runner = typeof spawnSync;
+
+export function normalizeRepairPreview(value: unknown, requestedHandle: string): ContactRepairPreview {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid repair preview");
+  const preview = value as Record<string, unknown>;
+  const handle = normalizeHandle(preview.handle);
+  if (identityKey(handle) !== identityKey(requestedHandle))
+    throw new Error("Contacts returned a different handle");
+  const kind = preview.kind === "phone" || preview.kind === "email" ? preview.kind : null;
+  if (!kind) throw new Error("Contacts returned an invalid field kind");
+  const fieldCount = finiteInteger(preview.fieldCount, "matching field count", 1, MAX_REPAIR_FIELDS);
+  if (!Array.isArray(preview.labels) || preview.labels.length !== fieldCount)
+    throw new Error("Contacts returned an invalid field-label list");
+  const cardNumber = finiteInteger(preview.cardNumber, "card number", 1, MAX_IDENTITY_CARDS);
+  const cardCount = finiteInteger(preview.cardCount, "card count", 1, MAX_IDENTITY_CARDS);
+  if (cardNumber > cardCount) throw new Error("Contacts returned inconsistent card metadata");
+  return {
+    handle,
+    name: normalizeIdentityName(preview.name),
+    kind,
+    fieldCount,
+    labels: preview.labels.map(optionalLabel),
+    cardNumber,
+    cardCount,
+    accountNumber: finiteInteger(
+      preview.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
+    ),
+    writeEnabled: preview.writeEnabled === true,
+  };
+}
+
+function contactText(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== "string" || value.length > maximum)
+    throw new Error(`Contacts returned an invalid ${label}`);
+  return value.replace(UNSAFE_TEXT, " ").replace(/\s+/g, " ").trim();
+}
+
+function normalizeLabeledValues(value: unknown, label: string): ContactLabeledValue[] {
+  if (!Array.isArray(value) || value.length > MAX_CARD_VALUES)
+    throw new Error(`Contacts returned an invalid ${label} list`);
+  return value.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+      throw new Error(`Contacts returned an invalid ${label}`);
+    const item = raw as Record<string, unknown>;
+    const itemValue = contactText(item.value, `${label} value`, 320);
+    if (!itemValue) throw new Error(`Contacts returned an empty ${label}`);
+    return { label: contactText(item.label, `${label} label`, 80), value: itemValue };
+  });
+}
+
+function normalizeAddresses(value: unknown): ContactAddress[] {
+  if (!Array.isArray(value) || value.length > MAX_CARD_VALUES)
+    throw new Error("Contacts returned an invalid address list");
+  return value.map((raw) => {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+      throw new Error("Contacts returned an invalid address");
+    const item = raw as Record<string, unknown>;
+    const address = {
+      label: contactText(item.label, "address label", 80),
+      street: contactText(item.street, "street", 320),
+      city: contactText(item.city, "city", 320),
+      state: contactText(item.state, "state", 320),
+      postalCode: contactText(item.postalCode, "postal code", 80),
+      country: contactText(item.country, "country", 160),
+      countryCode: contactText(item.countryCode, "country code", 8),
+    };
+    if (![address.street, address.city, address.state, address.postalCode, address.country].some(Boolean))
+      throw new Error("Contacts returned an empty address");
+    return address;
+  });
+}
+
+function normalizeCardDetail(value: unknown, seen: Set<string>): ContactCardDetail {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid card detail");
+  const card = value as Record<string, unknown>;
+  const token = normalizeContactToken(card.token);
+  if (seen.has(token)) throw new Error("Contacts returned a duplicate comparison card");
+  seen.add(token);
+  const birthday = contactText(card.birthday, "birthday", 10);
+  if (birthday && !/^(?:\d{4}\-|--)\d{2}\-\d{2}$/.test(birthday))
+    throw new Error("Contacts returned an invalid birthday");
+  return {
+    token,
+    cardNumber: finiteInteger(card.cardNumber, "card number", 1, MAX_COMPARE_CARDS),
+    accountNumber: finiteInteger(card.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS),
+    hasPhoto: card.hasPhoto === true,
+    displayName: contactText(card.displayName, "display name", 160),
+    firstName: contactText(card.firstName, "first name", 160),
+    middleName: contactText(card.middleName, "middle name", 160),
+    lastName: contactText(card.lastName, "last name", 160),
+    nickname: contactText(card.nickname, "nickname", 160),
+    organization: contactText(card.organization, "organization", 320),
+    department: contactText(card.department, "department", 320),
+    jobTitle: contactText(card.jobTitle, "job title", 320),
+    birthday,
+    note: contactText(card.note, "note", 1000),
+    phones: normalizeLabeledValues(card.phones, "phone"),
+    emails: normalizeLabeledValues(card.emails, "email"),
+    urls: normalizeLabeledValues(card.urls, "URL"),
+    addresses: normalizeAddresses(card.addresses),
+  };
+}
+
+export function normalizeContactComparison(
+  value: unknown, requestedHandle: string,
+): ContactComparison {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Contacts returned an invalid card comparison");
+  const body = value as Record<string, unknown>;
+  const handle = normalizeHandle(body.handle);
+  if (identityKey(handle) !== identityKey(requestedHandle))
+    throw new Error("Contacts returned a different handle");
+  const cardCount = finiteInteger(body.cardCount, "card count", 2, MAX_COMPARE_CARDS);
+  const sourceCount = finiteInteger(body.sourceCount, "source count", 1, MAX_COMPARE_CARDS);
+  if (!Array.isArray(body.cards) || body.cards.length !== cardCount)
+    throw new Error("Contacts returned an invalid comparison-card list");
+  const seen = new Set<string>();
+  const cards = body.cards.map((card) => normalizeCardDetail(card, seen));
+  if (cards.some((card, index) => card.cardNumber !== index + 1))
+    throw new Error("Contacts returned inconsistent comparison-card numbers");
+  if (new Set(cards.map((card) => card.accountNumber)).size !== sourceCount)
+    throw new Error("Contacts returned inconsistent comparison accounts");
+  return {
+    handle,
+    name: normalizeIdentityName(body.name),
+    cardCount,
+    sourceCount,
+    writeEnabled: body.writeEnabled === true,
+    cards,
+  };
+}
+
+function normalizeLinkMetadata(
+  value: Record<string, unknown>, requestedHandle: string,
+): Omit<ContactLinkPreview, "ready"> {
+  const handle = normalizeHandle(value.handle);
+  if (identityKey(handle) !== identityKey(requestedHandle))
+    throw new Error("Contacts returned a different handle");
+  const action = value.action;
+  if (action !== "Link Selected Cards" && action !== "Merge Selected Cards"
+      && action !== "Merge and Link Selected Cards")
+    throw new Error("Contacts returned an invalid link action");
+  return {
+    handle,
+    name: normalizeIdentityName(value.name),
+    cardCount: finiteInteger(value.cardCount, "card count", 2, MAX_COMPARE_CARDS),
+    sourceCount: finiteInteger(value.sourceCount, "source count", 1, MAX_COMPARE_CARDS),
+    writeEnabled: value.writeEnabled === true,
+    action,
+  };
+}
+
+function normalizeExpectedLinkAction(value: unknown): ContactLinkPreview["action"] {
+  if (value !== "Link Selected Cards" && value !== "Merge Selected Cards"
+      && value !== "Merge and Link Selected Cards")
+    throw new Error("the confirmed Contacts action is invalid");
+  return value;
+}
+
+export function resolveOnMac(
+  operation: "candidates" | "open" | "compare" | "link-prepare" | "link"
+    | "inspect" | "remove" | "undo",
+  handle: unknown = undefined,
+  token: unknown = undefined,
+  runner: Runner = spawnSync,
+  ownerToken: unknown = undefined,
+  expectedAction: unknown = undefined,
+): {
+  handle?: string;
+  candidates?: IdentityCandidate[];
+  opened?: boolean;
+  name?: string;
+  cardNumber?: number;
+  cardCount?: number;
+  accountNumber?: number;
+  preview?: ContactRepairPreview;
+  removal?: ContactRemoval;
+  undo?: ContactUndo;
+  comparison?: ContactComparison;
+  linkPreview?: ContactLinkPreview;
+  linkResult?: ContactLinkResult;
+} {
+  const normalizedHandle = operation === "undo" ? "" : normalizeHandle(handle);
+  const request: Record<string, unknown> = { operation };
+  if (operation === "undo") request.undoToken = normalizeUndoToken(token);
+  else request.handle = normalizedHandle;
+  if (operation === "open" || operation === "inspect" || operation === "remove")
+    request.token = normalizeContactToken(token);
+  if (operation === "compare" || operation === "link-prepare" || operation === "link")
+    request.ownerToken = normalizeContactToken(token);
+  const confirmedAction = operation === "link" ? normalizeExpectedLinkAction(expectedAction) : "";
+  if (operation === "link") request.expectedAction = confirmedAction;
+  if (operation === "inspect" || operation === "remove") {
+    const normalizedOwner = normalizeContactToken(ownerToken);
+    if (normalizedOwner === request.token) throw new Error("the correct and repair contact cannot be the same");
+    request.ownerToken = normalizedOwner;
+  }
+  const home = process.env.HOME ?? homedir();
+  const result: SpawnSyncReturns<string> = runner(
+    join(home, "bin", "contacts"),
+    ["--json", "resolve"],
+    {
+      encoding: "utf8",
+      input: JSON.stringify(request),
+      timeout: operation === "candidates" || operation === "open" ? 15000 : 35000,
+      maxBuffer: MAX_BRIDGE_OUTPUT_BYTES,
+    },
+  );
+  if (result.error) throw new Error(result.error.message || "Contacts bridge failed");
+  const stdout = String(result.stdout || "");
+  if (Buffer.byteLength(stdout) > MAX_BRIDGE_OUTPUT_BYTES)
+    throw new Error("Contacts returned too much data");
+  let response: unknown;
+  try { response = JSON.parse(stdout); }
+  catch { throw new Error("Contacts returned invalid JSON"); }
+  if (operation === "candidates") {
+    const candidates = normalizeBridgeCandidates(response, normalizedHandle);
+    return { handle: normalizedHandle, candidates };
+  }
+  if (response === null || typeof response !== "object" || Array.isArray(response))
+    throw new Error("Contacts returned an invalid response");
+  const body = response as Record<string, unknown>;
+  if (result.status !== 0 || body.ok !== true)
+    throw new Error(safeError(body.error || "Contacts operation failed"));
+  if (operation === "open") {
+    if (body.opened !== true) throw new Error("Contacts could not open this card");
+    return {
+      handle: normalizedHandle,
+      opened: true,
+      name: normalizeIdentityName(body.name),
+      cardNumber: finiteInteger(body.cardNumber, "card number", 1, MAX_IDENTITY_CARDS),
+      cardCount: finiteInteger(body.cardCount, "card count", 1, MAX_IDENTITY_CARDS),
+      accountNumber: finiteInteger(
+        body.accountNumber, "contact account number", 1, MAX_IDENTITY_CARDS,
+      ),
+    };
+  }
+  if (operation === "compare") {
+    return { comparison: normalizeContactComparison(body, normalizedHandle) };
+  }
+  if (operation === "link-prepare") {
+    const metadata = normalizeLinkMetadata(body, normalizedHandle);
+    if (typeof body.ready !== "boolean") throw new Error("Contacts returned an invalid link preview");
+    return { linkPreview: { ...metadata, ready: body.ready } };
+  }
+  if (operation === "link") {
+    const metadata = normalizeLinkMetadata(body, normalizedHandle);
+    if (metadata.action !== confirmedAction)
+      throw new Error("Contacts link action changed; review the cards again");
+    if (body.linked !== true) throw new Error("Contacts did not confirm the link action");
+    return { linkResult: { ...metadata, linked: true } };
+  }
+  if (operation === "inspect") {
+    return { handle: normalizedHandle, preview: normalizeRepairPreview(body.preview, normalizedHandle) };
+  }
+  if (operation === "remove") {
+    const preview = normalizeRepairPreview(body, normalizedHandle);
+    if (body.removed !== true) throw new Error("Contacts did not confirm the removal");
+    return {
+      handle: normalizedHandle,
+      removal: { ...preview, removed: true, undoToken: normalizeUndoToken(body.undoToken) },
+    };
+  }
+  if (body.restored !== true) throw new Error("Contacts did not confirm the restore");
+  return {
+    undo: {
+      restored: true,
+      alreadyPresent: body.alreadyPresent === true,
+      handle: normalizeHandle(body.handle),
+      name: normalizeIdentityName(body.name),
+      fieldCount: finiteInteger(body.fieldCount, "restored field count", 1, MAX_REPAIR_FIELDS),
+    },
+  };
+}
+
+export async function readStdinBounded(
+  input: AsyncIterable<Uint8Array | string> = process.stdin as any,
+  maximum = MAX_IDENTITY_REQUEST_BYTES,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const raw of input) {
+    const chunk = typeof raw === "string" ? Buffer.from(raw) : Buffer.from(raw);
+    total += chunk.length;
+    if (total > maximum) throw new Error("identity request is too large");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
+}
+
+function parseRequest(text: string): Record<string, unknown> {
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch { throw new Error("identity request must be valid JSON"); }
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error("identity request must be a JSON object");
+  return value as Record<string, unknown>;
+}
+
+export function identitiesPath(): string {
+  const overridden = process.env.BLIP_IDENTITIES_PATH;
+  if (overridden) {
+    if (!isAbsolute(overridden)) throw new Error("BLIP_IDENTITIES_PATH must be absolute");
+    return overridden;
+  }
+  const home = process.env.HOME;
+  if (!home || !isAbsolute(home)) throw new Error("HOME must be an absolute path");
+  return join(home, ".config", "blip", "identities.json");
+}
+
+function entries(config: IdentityConfig): Array<IdentityChoice & { handle: string }> {
+  return Object.entries(config.identities).map(([handle, choice]) => ({ handle, ...choice }));
+}
+
+function safeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error || "identity operation failed");
+  return message.replace(UNSAFE_TEXT, " ").replace(/\s+/g, " ").trim().slice(0, 180)
+    || "identity operation failed";
+}
+
+function emit(value: unknown): void {
+  const output = JSON.stringify(value);
+  if (Buffer.byteLength(output) > MAX_IDENTITY_OUTPUT_BYTES)
+    throw new Error("identity helper output exceeded its contract");
+  process.stdout.write(`${output}\n`);
+}
+
+function withChoice(config: IdentityConfig, handle: string, choice: IdentityChoice): IdentityConfig {
+  const targetKey = identityKey(handle);
+  const next: Record<string, IdentityChoice> = {};
+  for (const [savedHandle, savedChoice] of Object.entries(config.identities)) {
+    if (identityKey(savedHandle) !== targetKey) next[savedHandle] = savedChoice;
+  }
+  next[handle] = choice;
+  return normalizeIdentityConfig({ schemaVersion: 1, identities: next });
+}
+
+function withoutChoice(config: IdentityConfig, handle: string): IdentityConfig {
+  const targetKey = identityKey(handle);
+  return normalizeIdentityConfig({
+    schemaVersion: 1,
+    identities: Object.fromEntries(
+      Object.entries(config.identities).filter(([savedHandle]) => identityKey(savedHandle) !== targetKey),
+    ),
+  });
+}
+
+function requireSavedRepairOwner(path: string, handle: unknown, ownerToken: unknown): void {
+  const requested = normalizeHandle(handle);
+  const requestedKey = identityKey(requested);
+  const token = normalizeContactToken(ownerToken);
+  const config = readIdentities(path).config;
+  for (const [savedHandle, choice] of Object.entries(config.identities)) {
+    if (identityKey(savedHandle) !== requestedKey) continue;
+    if (choice.source !== "contacts" || choice.contactToken !== token)
+      throw new Error("save the correct Contacts name in Blip before repairing another card");
+    return;
+  }
+  throw new Error("save the correct Contacts name in Blip before repairing another card");
+}
+
+async function main(): Promise<void> {
+  const operation = process.argv[2] || "read";
+  const path = identitiesPath();
+  try {
+    if (operation === "read") {
+      const result = readIdentities(path);
+      emit({
+        ok: true,
+        exists: result.exists,
+        path,
+        identities: entries(result.config),
+        contactWrites: contactWritesEnabled(),
+      });
+      return;
+    }
+    const request = parseRequest(await readStdinBounded());
+    if (operation === "candidates") {
+      const result = resolveOnMac("candidates", request.handle);
+      emit({
+        ok: true,
+        handle: result.handle,
+        ambiguous: (result.candidates?.length ?? 0) > 1,
+        candidates: result.candidates ?? [],
+      });
+      return;
+    }
+    if (operation === "choose") {
+      const handle = normalizeHandle(request.handle);
+      const name = normalizeIdentityName(request.name);
+      const token = normalizeContactToken(request.token);
+      const candidateResult = resolveOnMac("candidates", handle);
+      const selected = candidateResult.candidates?.find((c) => c.token === token && c.name === name);
+      if (!selected) throw new Error("the selected contact is no longer a candidate");
+      const current = readIdentities(path).config;
+      const config = writeIdentities(path, withChoice(current, handle, {
+        name: selected.name, source: "contacts", contactToken: selected.token,
+      }));
+      emit({ ok: true, path, identity: { handle, ...config.identities[handle]! } });
+      return;
+    }
+    if (operation === "custom") {
+      const handle = normalizeHandle(request.handle);
+      const name = normalizeIdentityName(request.name);
+      const current = readIdentities(path).config;
+      const config = writeIdentities(path, withChoice(current, handle, { name, source: "custom" }));
+      emit({ ok: true, path, identity: { handle, ...config.identities[handle]! } });
+      return;
+    }
+    if (operation === "clear") {
+      const handle = normalizeHandle(request.handle);
+      const current = readIdentities(path).config;
+      const config = writeIdentities(path, withoutChoice(current, handle));
+      emit({ ok: true, path, cleared: handle, identities: entries(config) });
+      return;
+    }
+    if (operation === "open") {
+      const result = resolveOnMac("open", request.handle, request.token);
+      emit({
+        ok: true,
+        opened: result.opened === true,
+        name: result.name,
+        cardNumber: result.cardNumber,
+        cardCount: result.cardCount,
+        accountNumber: result.accountNumber,
+      });
+      return;
+    }
+    if (operation === "compare" || operation === "link-prepare" || operation === "link") {
+      if (operation !== "compare" && !contactWritesEnabled())
+        throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
+      requireSavedRepairOwner(path, request.handle, request.ownerToken);
+      const result = resolveOnMac(
+        operation, request.handle, request.ownerToken, spawnSync, undefined, request.expectedAction,
+      );
+      if (operation === "compare") emit({ ok: true, comparison: result.comparison });
+      else if (operation === "link-prepare") emit({ ok: true, preview: result.linkPreview });
+      else emit({ ok: true, ...result.linkResult });
+      return;
+    }
+    if (operation === "inspect" || operation === "remove") {
+      if (!contactWritesEnabled())
+        throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
+      requireSavedRepairOwner(path, request.handle, request.ownerToken);
+      const result = resolveOnMac(operation, request.handle, request.token, spawnSync, request.ownerToken);
+      if (operation === "inspect") emit({ ok: true, preview: result.preview });
+      else emit({ ok: true, ...result.removal });
+      return;
+    }
+    if (operation === "undo") {
+      if (!contactWritesEnabled())
+        throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
+      const result = resolveOnMac("undo", undefined, request.undoToken);
+      emit({ ok: true, ...result.undo });
+      return;
+    }
+    throw new Error(
+      "operation must be read, candidates, choose, custom, clear, open, compare, link-prepare, link, inspect, remove, or undo",
+    );
+  } catch (error) {
+    emit({ ok: false, error: safeError(error) });
+    process.exitCode = 1;
+  }
+}
+
+if (import.meta.main) void main();

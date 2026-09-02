@@ -15,7 +15,7 @@
   <img alt="Omarchy" src="https://img.shields.io/badge/Omarchy-plugin-5fd7ff?style=flat-square">
   <img alt="QuickShell" src="https://img.shields.io/badge/QuickShell-QML-0a84ff?style=flat-square">
   <img alt="bun" src="https://img.shields.io/badge/bun-TypeScript-f9f1e1?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-177%20passing-2ea043?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-217%20passing-2ea043?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square">
 </p>
 
@@ -36,6 +36,8 @@ Version 2.0 (2026-08-31) is the "this is what I wanted" release. Since 1.0:
   double-click the bar icon, or `qs ipc … app`. Remembers size and whether
   it was open across shell restarts; title shows the unread count.
 - **Contact photos** from the Mac's Contacts in the sidebar.
+- **Contact-name resolver** for numbers/emails that appear on multiple cards:
+  choose the right name for Blip, or open the matching source card on the Mac.
 - **Link cards** with preview image, title, and host, like Messages.
 - **Real-time push** — messages land in ~2 s via a watcher on the Mac.
 - **Attachments both ways** — photos inline, files as chips, send by
@@ -77,6 +79,7 @@ Linux side. If the Mac is asleep, the widget dims and says so.
 - left-click panel · **double-click opens the app window** · middle-click refresh · right-click mark all read
 
 **Thread list**
+- **pinned conversations from Messages.app**, in the same ordered avatar grid; Blip reads the Mac's pin state rather than maintaining a second favorites list
 - contact photo (from the Mac's Contacts) or initials, name, preview, time
 - **blue dot** that stays until you open *that* conversation — iMessage semantics, not "I glanced at the list"
 - groups titled the way Messages.app titles them: the group's name, else its members
@@ -213,12 +216,15 @@ It writes `~/.config/blip/bridge.conf`, adds an ssh ControlMaster block
 **dedicated ssh key** (`~/.ssh/blip_ed25519`) that the Mac confines to the
 five bridge tools and nothing else, then smoke-tests the bridge.
 
-**3. Two grants on the Mac** (macOS won't let a script do these)
+**3. Core grants on the Mac** (macOS won't let a script do these)
 
 - *Full Disk Access* → add `/usr/libexec/sshd-keygen-wrapper` — that's what
   lets an ssh session read `chat.db`.
 - *Automation → Messages* → the first send from ssh pops an Allow prompt on
   the Mac's screen; click it once.
+- Optional contact comparison/linking: allow *Automation → Contacts*, then add
+  `/usr/libexec/sshd-keygen-wrapper` under *Privacy & Security →
+  Accessibility*. Contact writes still require both explicit Blip write gates.
 
 `ssh your-mac python3 ~/.blip/bin/blip-check` tells you what's still missing
 (the wizard runs it for you and waits while you click).
@@ -233,6 +239,74 @@ bubble is in your bar.
 // ~/.config/blip/allowlist.json — re-read every poll, no restart
 { "allow": ["+15551234567", "them@icloud.com"] }
 ```
+
+## Settings and portable configuration
+
+Choose the gear in Blip's message header to edit appearance live. The editor
+writes a normal JSON file at `~/.config/blip/preferences.json`, so it can be
+copied between machines or tracked by dotfile tooling. A restored file is
+noticed within five seconds, or immediately with **Reload file**. Track the
+real file rather than a symlink: the preference boundary deliberately refuses
+symlinks and non-regular files.
+
+```json
+{
+  "schemaVersion": 1,
+  "outgoingBubbleColor": "theme",
+  "incomingBubbleColor": "theme",
+  "backgroundOpacity": 0.7,
+  "fontScale": 1,
+  "density": 1,
+  "sidebarWidth": 320,
+  "avatarSize": 30,
+  "cornerScale": 1
+}
+```
+
+Bubble colors accept `"theme"`, `#rrggbb`, or `#rrggbbaa`. The GUI exposes
+every field: app-window opacity, font scale, density, sidebar width, avatar
+size, and corner roundness. Writes are atomic and owner-only; malformed,
+oversized, symlinked, or out-of-range files are rejected with an error in the
+settings view instead of being loaded into the long-lived shell.
+
+Settings has separate **Contacts** and **Appearance** tabs, so identity repair
+does not share one long scroll with visual preferences. The Contacts tab lists
+direct conversations whose phone number or email resolves to more than one
+Contacts name. Opening one replaces the list with a focused detail view; use
+**All conversations** or Escape to return. Identity repair is deliberately
+split into two stages. First, selecting a candidate changes nothing; a separate
+**Save “Name” in Blip only** action writes the explicit display choice to
+`~/.config/blip/identities.json`. It applies to pinned tiles, the thread list,
+notifications, and sender labels. The file is portable and safe to restore
+alongside `preferences.json`, but it contains personal names and handles, so
+only put it in a private dotfiles repository.
+
+Second, the optional Mac review stays collapsed until requested. It lists every
+active matching source card separately, with large duplicate sets collapsed
+again. Raw account databases sometimes retain historical cache rows that the
+Contacts object layer no longer exposes; Blip verifies and omits those rows so
+they cannot be mistaken for editable cards. **Compare & link N cards…** loads a
+bounded, read-only view of each active card's discovered name, organization,
+phone, email, address, URL, birthday, and notes, plus a de-duplicated combined
+view and a short missing-details checklist. **Open & edit on Mac…** opens the
+exact card when a source value needs completing.
+
+From that comparison Blip can ask Contacts to select the exact cards and report
+Apple's currently enabled **Link Selected Cards** or **Merge Selected Cards**
+action. Nothing happens until a second confirmation names that exact action.
+The action is pinned through the SSH bridge and refused if it changes before
+the click. It changes Contacts and may sync upstream; unlike the narrow
+phone/email repair below, Blip cannot provide an automatic unlink receipt.
+This handoff needs Automation → Contacts and Accessibility for
+`/usr/libexec/sshd-keygen-wrapper` on the Mac.
+
+For a handle attached to the wrong person, Blip can also inspect the exact
+card, show a destructive confirmation, remove only that verified phone/email
+through Contacts.app, and offer an immediate undo; its private receipt expires
+after seven days. Both write features require `contact_writes=on` plus the
+separate owner-only Mac gate. Blip never writes the private Contacts SQLite
+database or deletes a possibly shared number without confirmation. A custom
+Blip-only name is available when no source card exists.
 
 ## Keyboard
 
@@ -254,6 +328,7 @@ IPC, for scripts and other plugins:
 
 ```sh
 qs -p /usr/share/omarchy/shell ipc call nixfred.blip status
+qs -p /usr/share/omarchy/shell ipc call nixfred.blip settings
 qs -p /usr/share/omarchy/shell ipc call nixfred.blip goto 15551234567   # bare digits
 qs -p /usr/share/omarchy/shell ipc call nixfred.blip read               # mark all read
 ```
@@ -262,7 +337,7 @@ Everything that sends or reads message content over IPC (`goto`, `compose`,
 `bubbles`, `threads`, `find`, `newchat`, `read`) is **off by default** — any
 local process could otherwise send as you. Turn it on with `automation=on`
 in `~/.config/blip/bridge.conf` (re-read live). `status`, `open`, `close`,
-`toggle`, `window`, `app` are always available.
+`toggle`, `window`, `app`, `settings` are always available.
 
 ## Design notes worth knowing
 
@@ -316,7 +391,7 @@ The 273,000-message history stays on the Mac where it lives.
 ## Development
 
 ```sh
-bun test                                     # 177 tests, ~70 ms
+bun test                                     # 217 tests, ~125 ms
 bun collector.ts --deep | jq '.unread, (.threads|length)'
 bun thread.ts +15551234567 40 | jq '.bubbles[-1]'
 ```

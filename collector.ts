@@ -22,6 +22,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import {
+  identityNameFor,
+  safeReadIdentityConfig,
+  type IdentityConfig,
+} from "./identities";
 
 const HOME = process.env.HOME ?? homedir();
 
@@ -99,6 +104,9 @@ export interface Thread {
   last_from_me: boolean;
   count: number;       // messages for this chat inside the fetched window
   unread: number;      // inbound newer than the global/per-thread read mark
+  /** Messages.app pin state. Order is sourced read-only from the Mac plist. */
+  pinned?: boolean;
+  pin_order?: number;
 }
 
 export interface Toast {
@@ -237,6 +245,30 @@ export function loadAllowlist(path = ALLOWLIST_PATH): string[] {
 export function displayName(msgs: ImsgMessage[]): string {
   for (const m of msgs) if (m.name) return m.name;
   return chatKey(msgs[0]);
+}
+
+/** Apply a user's explicit resolution before any list, toast, or group label is built. */
+export function applyIdentityOverrides(
+  msgs: ImsgMessage[],
+  config: IdentityConfig,
+): ImsgMessage[] {
+  return msgs.map((message) => {
+    const name = identityNameFor(message.handle, config)
+      || identityNameFor(chatKey(message), config);
+    return name && name !== message.name ? { ...message, name } : message;
+  });
+}
+
+/** Complete chat rows may have no message in the preview window, so name DMs again here. */
+export function applyThreadIdentityOverrides(
+  threads: Thread[],
+  config: IdentityConfig,
+): Thread[] {
+  return threads.map((thread) => {
+    if (isGroupChat(thread.chat)) return thread;
+    const name = identityNameFor(thread.chat, config) || identityNameFor(thread.handle, config);
+    return name && name !== thread.name ? { ...thread, name } : thread;
+  });
 }
 
 /**
@@ -639,6 +671,8 @@ export interface ChatInfo {
   last_from_me: boolean;
   last_handle: string;
   last_name: string | null;
+  /** Ordered position from com.apple.messages.pinning.plist, null if unpinned. */
+  pinned_order: number | null;
 }
 
 /** How many conversations the sidebar lists (chat.db has hundreds). */
@@ -671,6 +705,9 @@ export function fetchChats(runner = spawnSync): ChatInfo[] | null {
         last_from_me: r.last_from_me === true,
         last_handle: String(r.last_handle ?? ""),
         last_name: typeof r.last_name === "string" ? r.last_name : null,
+        pinned_order: Number.isInteger(r.pinned_order) && r.pinned_order >= 0 && r.pinned_order < 16
+          ? Number(r.pinned_order)
+          : null,
       }));
   } catch {
     return null;
@@ -689,8 +726,17 @@ export function mergeChats(
   groups: Record<string, GroupInfo>,
   unreadCounts: Record<string, number>,
 ): Thread[] {
+  const pinOrder = new Map<string, number>();
+  for (const chat of chats) {
+    if (chat.pinned_order === null) continue;
+    const previous = pinOrder.get(chat.id);
+    if (previous === undefined || chat.pinned_order < previous) pinOrder.set(chat.id, chat.pinned_order);
+  }
   const have = new Set(threads.map((t) => t.chat));
-  const out = [...threads];
+  const out = threads.map((thread) => {
+    const order = pinOrder.get(thread.chat);
+    return order === undefined ? thread : { ...thread, pinned: true, pin_order: order };
+  });
   for (const c of chats) {
     if (have.has(c.id)) continue;
     have.add(c.id);
@@ -709,6 +755,7 @@ export function mergeChats(
       last_from_me: c.last_from_me,
       count: 0,
       unread: unreadCounts[c.id] ?? 0,
+      ...(pinOrder.has(c.id) ? { pinned: true, pin_order: pinOrder.get(c.id)! } : {}),
     });
   }
   return out.sort((a, b) => (a.last_ts < b.last_ts ? 1 : a.last_ts > b.last_ts ? -1 : 0));
@@ -768,7 +815,9 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
     };
   }
 
-  const highest = maxTs(fetched.msgs, state.watermark);
+  const identityConfig = safeReadIdentityConfig();
+  const resolvedMessages = applyIdentityOverrides(fetched.msgs, identityConfig);
+  const highest = maxTs(resolvedMessages, state.watermark);
   // A message can carry a FUTURE timestamp (timezone skew — a "Sep 1
   // 08:53" birthday text arrived Aug 31 morning). A read mark taken from
   // the GLOBAL max therefore poisoned unrelated threads: anything arriving
@@ -778,7 +827,7 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   // nothing beyond now leaks onto other threads.
   const nowTs = localNowTs();
   const chatMax: Record<string, string> = {};
-  for (const m of fetched.msgs) {
+  for (const m of resolvedMessages) {
     const c = chatKey(m);
     if (!chatMax[c] || m.ts > chatMax[c]!) chatMax[c] = m.ts;
   }
@@ -805,8 +854,8 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   // Group metadata is ~1000 rows; refresh it only on a deep (panel) fetch and
   // keep the last good copy if the lookup fails.
   const groups = (deep ? fetchGroups() : null) ?? state.groups;
-  const selfChats = [...new Set([...state.selfChats, ...detectSelfChats(fetched.msgs)])];
-  const msgs = dedupeSelfEcho(fetched.msgs, selfChats);
+  const selfChats = [...new Set([...state.selfChats, ...detectSelfChats(resolvedMessages)])];
+  const msgs = dedupeSelfEcho(resolvedMessages, selfChats);
   let exactCounts = unreadCounts(msgs, state.readMark, state.readMarks, selfChats);
   let exactOldest = unreadOldest(msgs, state.readMark, state.readMarks, selfChats);
   if (markRead) {
@@ -826,9 +875,12 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
   // shallow poll returns the window's rows and the widget keeps its last
   // complete list in memory (it skips identical assignments anyway).
   const chats = deep ? fetchChats() : null;
-  const threads = chats ? mergeChats(windowThreads, chats, groups, exactCounts) : windowThreads;
+  const threads = applyThreadIdentityOverrides(
+    chats ? mergeChats(windowThreads, chats, groups, exactCounts) : windowThreads,
+    identityConfig,
+  );
   const toast = selectToasts(msgs, state.watermark, loadAllowlist(), state.toasted);
-  const failures = selectFailures(fetched.msgs, state.toasted, nowTs);
+  const failures = selectFailures(resolvedMessages, state.toasted, nowTs);
   const unread = Object.values(exactCounts).reduce((n, count) => n + count, 0);
 
   // Both marks advance only on a good fetch, so an outage cannot silently

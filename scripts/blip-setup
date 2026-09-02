@@ -54,6 +54,8 @@ mkdir -p "$conf_dir"
   echo "key=$HOME/.ssh/blip_ed25519"
   echo "# on = local scripts may send/read through 'qs ipc call nixfred.blip …'"
   echo "automation=${BLIP_AUTOMATION:-off}"
+  echo "# on = show confirmed, undoable Mac Contacts repair controls"
+  echo "contact_writes=${BLIP_CONTACT_WRITES:-off}"
 } > "$conf"
 chmod 0600 "$conf"
 echo "✓ $conf"
@@ -95,6 +97,14 @@ if ssh -n -o ConnectTimeout=6 -o BatchMode=yes "$host" true 2>/dev/null; then
   ssh "$host" 'mkdir -p ~/.blip/src'
   scp -q "$here"/bridge/mac/* "$host:~/.blip/src/"
   ssh "$host" 'bash ~/.blip/src/install.sh'
+
+  # Contact writes require a second, Mac-local gate that the restricted Blip
+  # key cannot create for itself. Only an explicit setup environment opt-in
+  # installs it; ordinary setup remains read-only/open-only.
+  if [[ "${BLIP_CONTACT_WRITES:-off}" == on ]]; then
+    ssh "$host" 'umask 077; mkdir -p ~/.blip; printf "enabled-v1\n" > ~/.blip/contact-writes-enabled; chmod 0600 ~/.blip/contact-writes-enabled'
+    echo "✓ Mac contact-write gate enabled (explicit BLIP_CONTACT_WRITES=on)"
+  fi
 
   # 4b. Dedicated key, confined on the Mac to blip-dispatch (restrict = no
   # shell, no forwarding, no pty). Your everyday key is untouched; Blip's key

@@ -5,7 +5,8 @@
 # What it does:
 #   1. copies the bridge tools into ~/.blip/bin (imsg, imsg-send, contacts,
 #      tcc-check, blip-check) — read-only sqlite over chat.db, AppleScript
-#      send, Contacts — plus blip-dispatch, the forced-command gate that
+#      send, Contacts — plus the static contact-repair.js Automation helper,
+#      the scoped contact-link.applescript UI handoff, and blip-dispatch, the forced-command gate that
 #      confines Blip's dedicated ssh key to exactly those tools;
 #   2. makes sure Remote Login (sshd) is on, since Blip talks over ssh;
 #   3. explains the two TCC grants that cannot be scripted:
@@ -17,7 +18,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dest="$HOME/.blip/bin"
 mkdir -p "$dest"
-for t in imsg imsg-send contacts tcc-check blip-check blip-dispatch; do
+for t in imsg imsg-send contacts contact-repair.js contact-link.applescript tcc-check blip-check blip-dispatch; do
   if [[ -f "$here/$t" ]]; then
     install -m 0755 "$here/$t" "$dest/$t"
   else
@@ -47,6 +48,16 @@ Two permissions must be granted by hand (macOS will not let a script do it):
   2. Automation → Messages: the first send from an ssh session pops a prompt on
      THIS Mac's screen: "sshd-keygen-wrapper wants to control Messages" — click
      Allow once. (blip-setup triggers this with a dry-run-free self-send.)
+
+Optional contact comparison, repair, and linking also need Automation →
+Contacts for sshd-keygen-wrapper. Blip requests it only when you explicitly
+open those tools; contact writes additionally require both contact_writes=on
+on Linux and the owner-only ~/.blip/contact-writes-enabled gate on this Mac.
+
+Linking or merging exact cards from Blip additionally uses System Events and
+requires sshd-keygen-wrapper under Privacy & Security → Accessibility. Blip
+first selects the revalidated cards and shows a separate confirmation; it
+invokes only Contacts' enabled Link/Merge Selected Cards menu item.
 
 Then check:
 EOF
