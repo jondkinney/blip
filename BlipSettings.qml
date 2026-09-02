@@ -61,7 +61,7 @@ FocusScope {
       PanelHero {
         Layout.fillWidth: true
         title: "Blip settings"
-        meta: root.page === "contacts" ? "Contact names" : "Appearance"
+        meta: root.page === "contacts" ? "Contacts" : "Appearance"
         detail: ""
         foreground: root.foreground
         fontFamily: root.fontFamily
@@ -116,7 +116,7 @@ FocusScope {
       Item { Layout.fillWidth: true }
       Text {
         text: root.page === "contacts"
-          ? "Resolve names without touching Messages or Contacts"
+          ? "Manage Mac Contacts or set an optional display preference"
           : "Changes preview and apply live"
         textFormat: Text.PlainText
         color: Qt.darker(root.foreground, 1.4)

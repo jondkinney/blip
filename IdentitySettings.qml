@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 
-// Guided contact-name repair. Selecting a candidate is harmless; changing
-// Blip and opening/editing a Mac Contacts card are deliberately separate.
+// Mac contact management and optional Blip display-name preferences are
+// deliberately separate workflows. Selecting a candidate is session-only.
 ColumnLayout {
   id: root
 
@@ -94,9 +94,29 @@ ColumnLayout {
     var saved = choiceForHandle(handle)
     selectedToken = saved && saved.source === "contacts" ? saved.contactToken : ""
     customField.text = saved && saved.source === "custom" ? saved.name : ""
-    namingExpanded = !saved
+    namingExpanded = false
     macReviewExpanded = false
     resolver.findCandidates(handle)
+  }
+  function openNamePreference() {
+    if (!resolver || resolver.loading) return
+    if (resolver.comparison) resolver.cancelComparison()
+    macReviewExpanded = false
+    namingExpanded = true
+  }
+  function openContactManagement() {
+    if (!resolver || resolver.loading || resolver.candidates.length === 0) return
+    var candidate = selectedCandidate
+    if (!candidate && resolver.candidates.length === 1) {
+      selectedToken = resolver.candidates[0].token
+      candidate = resolver.candidates[0]
+    }
+    namingExpanded = false
+    macReviewExpanded = true
+    if (candidate && (!resolver.comparison
+        || resolver.comparison.ownerToken !== candidate.token)) {
+      resolver.compareCards(resolver.activeHandle, candidate.token)
+    }
   }
   function closeReview() {
     if (!resolver || resolver.loading) return
@@ -121,7 +141,7 @@ ColumnLayout {
       var saved = root.choiceForHandle(root.resolver.activeHandle)
       root.selectedToken = saved && saved.source === "contacts" ? saved.contactToken : ""
       customField.text = saved && saved.source === "custom" ? saved.name : ""
-      root.namingExpanded = !saved
+      root.namingExpanded = false
     }
     function onIdentitiesChanged() {
       if (root.choiceForHandle(root.resolver.activeHandle)) root.namingExpanded = false
@@ -131,11 +151,11 @@ ColumnLayout {
       if (saved && saved.source === "contacts"
           && root.candidateForToken(saved.contactToken)) {
         root.selectedToken = saved.contactToken
-        root.namingExpanded = false
         return
       }
-      if (root.selectedToken !== "" && !root.candidateForToken(root.selectedToken))
-        root.selectedToken = ""
+      if (root.selectedToken !== "" && root.candidateForToken(root.selectedToken)) return
+      root.selectedToken = root.resolver.candidates.length === 1
+        ? root.resolver.candidates[0].token : ""
     }
   }
 
@@ -146,7 +166,7 @@ ColumnLayout {
 
   Text {
     Layout.fillWidth: true
-    text: "Blip can use the name already on a Mac contact. Only a name you type yourself is a Blip-only name. Editing a source card is a separate, confirmed action."
+    text: "Open a conversation to choose one of two separate tasks: manage its Mac contact cards, or save an optional Blip display-name preference. Contact management never creates a naming preference."
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: Qt.darker(root.foreground, 1.35)
@@ -157,7 +177,7 @@ ColumnLayout {
   Text {
     Layout.fillWidth: true
     visible: root.savedChoices.length > 0
-    text: "CONTACT NAMES USED BY BLIP"
+    text: "SAVED DISPLAY PREFERENCES"
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.25)
     font.family: root.fontFamily
@@ -207,7 +227,7 @@ ColumnLayout {
           }
         }
         SmallButton {
-          label: "Review names…"
+          label: "Open…"
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.beginReview(modelData.handle)
         }
@@ -248,7 +268,7 @@ ColumnLayout {
         font.pixelSize: root.fontSize(Style.font.bodySmall)
       }
       SmallButton {
-        label: "Review names…"
+        label: "Open…"
         enabled: root.resolver && !root.resolver.loading
         onClicked: root.beginReview(modelData.chat)
       }
@@ -295,7 +315,7 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: root.activeChoice ? root.activeChoice.name
-              : root.selectedCandidate ? root.selectedCandidate.name : "Name this conversation"
+              : root.selectedCandidate ? root.selectedCandidate.name : "Conversation contact"
             textFormat: Text.PlainText
             elide: Text.ElideRight
             color: root.foreground
@@ -315,82 +335,130 @@ ColumnLayout {
         }
       }
 
-      Rectangle {
+      Text {
         Layout.fillWidth: true
-        visible: root.activeChoice !== null && (!root.namingExpanded
-          || (root.resolver && root.resolver.comparison !== null))
-        implicitHeight: savedNameSummary.implicitHeight + root.space(24)
-        radius: root.corner(root.space(10))
-        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
-        border.width: 1
-        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3)
+        visible: !root.namingExpanded && !root.macReviewExpanded
+        text: "What do you want to do? These are separate workflows."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.bodySmall)
+      }
 
-        RowLayout {
-          id: savedNameSummary
-          anchors.fill: parent
-          anchors.margins: root.space(12)
-          spacing: root.space(10)
-          Rectangle {
-            Layout.preferredWidth: root.space(26)
-            Layout.preferredHeight: root.space(26)
-            radius: width / 2
-            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+      GridLayout {
+        Layout.fillWidth: true
+        visible: !root.namingExpanded && !root.macReviewExpanded
+        columns: width >= root.space(760) ? 2 : 1
+        rowSpacing: root.space(12)
+        columnSpacing: root.space(12)
+
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.alignment: Qt.AlignTop
+          implicitHeight: manageTask.implicitHeight + root.space(24)
+          radius: root.corner(root.space(10))
+          color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1)
+          border.width: 1
+          border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.4)
+          ColumnLayout {
+            id: manageTask
+            anchors.fill: parent
+            anchors.margins: root.space(12)
+            spacing: root.space(7)
             Text {
-              anchors.centerIn: parent
-              text: "✓"
+              Layout.fillWidth: true
+              text: "MANAGE MAC CONTACTS"
               textFormat: Text.PlainText
               color: root.accent
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.caption)
               font.bold: true
             }
-          }
-          ColumnLayout {
-            Layout.fillWidth: true
-            spacing: root.space(2)
             Text {
               Layout.fillWidth: true
-              text: root.activeChoice ? root.activeChoice.name : ""
+              text: "Deduplicate, merge, edit, delete, or link source cards. This never creates a Blip display-name preference."
               textFormat: Text.PlainText
-              elide: Text.ElideRight
+              wrapMode: Text.WordWrap
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.bodySmall)
-              font.bold: true
             }
+            SmallButton {
+              Layout.alignment: Qt.AlignLeft
+              primary: true
+              label: root.selectedCandidate && root.selectedCandidate.recordCount > 1
+                ? "Manage " + root.selectedCandidate.recordCount + " source cards…"
+                : "Manage Contacts…"
+              enabled: root.resolver && !root.resolver.loading
+                && root.resolver.candidates.length > 0
+              onClicked: root.openContactManagement()
+            }
+          }
+        }
+
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.alignment: Qt.AlignTop
+          implicitHeight: namingTask.implicitHeight + root.space(24)
+          radius: root.corner(root.space(10))
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+          border.width: 1
+          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+          ColumnLayout {
+            id: namingTask
+            anchors.fill: parent
+            anchors.margins: root.space(12)
+            spacing: root.space(7)
             Text {
               Layout.fillWidth: true
-              text: root.activeChoice && root.activeChoice.source === "contacts"
-                ? "FROM CONTACTS · CONTACT UNCHANGED"
-                : "CUSTOM BLIP-ONLY NAME"
+              text: "SET A BLIP DISPLAY PREFERENCE · OPTIONAL"
               textFormat: Text.PlainText
-              color: root.accent
+              color: Qt.darker(root.foreground, 1.25)
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.caption)
               font.bold: true
             }
-          }
-          SmallButton {
-            label: "Change…"
-            enabled: root.resolver && !root.resolver.loading
-            onClicked: root.namingExpanded = true
+            Text {
+              Layout.fillWidth: true
+              text: root.activeChoice
+                ? "Current preference: “" + root.activeChoice.name + "”. Change or remove the portable rule Blip uses for this conversation."
+                : "Use only when Blip shows a number or an unwanted name. Skip this when you only want to deduplicate Contacts."
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Qt.darker(root.foreground, 1.3)
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.bodySmall)
+            }
+            SmallButton {
+              Layout.alignment: Qt.AlignLeft
+              label: root.activeChoice ? "Change display preference…" : "Choose display name…"
+              enabled: root.resolver && !root.resolver.loading
+              onClicked: root.openNamePreference()
+            }
           }
         }
       }
 
       ColumnLayout {
         Layout.fillWidth: true
-        visible: (root.namingExpanded || root.activeChoice === null)
+        visible: root.namingExpanded
           && (!root.resolver || root.resolver.comparison === null)
         spacing: root.space(10)
 
       RowLayout {
         Layout.fillWidth: true
         spacing: root.space(8)
-        SectionHeading { label: "CHOOSE NAME SOURCE" }
+        SectionHeading { label: "OPTIONAL BLIP DISPLAY NAME" }
         SmallButton {
           visible: root.activeChoice !== null
-          label: "Done"
+          danger: true
+          label: "Remove display preference"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: root.resolver.clearChoice(root.resolver.activeHandle)
+        }
+        SmallButton {
+          label: "Back to tasks"
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.namingExpanded = false
         }
@@ -398,7 +466,7 @@ ColumnLayout {
 
       Text {
         Layout.fillWidth: true
-        text: "Selecting a Contacts person changes nothing. Continue only when the person and displayed name are right."
+        text: "This saves a portable rule in identities.json for what Blip displays. It does not edit Mac Contacts, and it is not needed to compare or merge duplicate cards."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -518,8 +586,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: root.selectedCandidate
               ? root.selectedChoiceIsSaved
-                ? "✓ Using “" + root.selectedCandidate.name + "”"
-                : "Use “" + root.selectedCandidate.name + "” in Blip"
+                ? "✓ Current display preference: “" + root.selectedCandidate.name + "”"
+                : "Save “" + root.selectedCandidate.name + "” as Blip’s display preference"
               : ""
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
@@ -531,8 +599,8 @@ ColumnLayout {
           Text {
             Layout.fillWidth: true
             text: root.selectedChoiceIsSaved
-              ? "That is the name currently found in Contacts. Blip has not changed the contact."
-              : "Blip will display this Contacts name for the number. The contact itself will stay unchanged."
+              ? "Stored in identities.json. Mac Contacts remains unchanged; remove this preference to return to Blip’s normal contact-name lookup."
+              : "This adds a portable name rule for this number. Skip it if your only goal is to deduplicate or edit the contact cards."
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: Qt.darker(root.foreground, 1.35)
@@ -544,34 +612,18 @@ ColumnLayout {
             visible: !root.selectedChoiceIsSaved
             primary: true
             label: root.selectedCandidate
-              ? "Use this Contacts name"
-              : "Use Contacts name"
+              ? "Save Contacts name as display preference"
+              : "Save Contacts display preference"
             enabled: root.resolver && !root.resolver.loading && root.selectedCandidate !== null
             onClicked: root.resolver.choose(
               root.resolver.activeHandle, root.selectedCandidate.name, root.selectedCandidate.token)
-          }
-          SmallButton {
-            Layout.alignment: Qt.AlignLeft
-            visible: root.selectedChoiceIsSaved && root.selectedCandidate
-              && root.selectedCandidate.recordCount > 1
-            primary: true
-            label: root.selectedCandidate
-              ? root.selectedCandidate.recordCount === 1 ? "Manage contact…"
-                : "Manage " + root.selectedCandidate.recordCount + " source cards…"
-              : "Manage Contacts cards…"
-            enabled: root.resolver && !root.resolver.loading
-            onClicked: {
-              root.macReviewExpanded = true
-              root.resolver.compareCards(
-                root.resolver.activeHandle, root.selectedCandidate.token)
-            }
           }
         }
       }
 
       Text {
         Layout.fillWidth: true
-        text: "OR USE A CUSTOM BLIP-ONLY NAME"
+        text: "OR SAVE A CUSTOM BLIP-ONLY DISPLAY NAME"
         textFormat: Text.PlainText
         color: Qt.darker(root.foreground, 1.35)
         font.family: root.fontFamily
@@ -603,28 +655,34 @@ ColumnLayout {
 
       Rectangle {
         Layout.fillWidth: true
+        visible: root.macReviewExpanded
         implicitHeight: 1
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
       }
 
       RowLayout {
         Layout.fillWidth: true
+        visible: root.macReviewExpanded
         spacing: root.space(8)
-        SectionHeading { label: "MAC CONTACTS · OPTIONAL" }
+        SectionHeading { label: "MANAGE MAC CONTACTS" }
         SmallButton {
-          label: root.macReviewExpanded ? "Hide Contacts tools" : "Review Contacts cards…"
+          label: "Back to tasks"
           enabled: root.resolver && !root.resolver.loading
-          onClicked: root.macReviewExpanded = !root.macReviewExpanded
+          onClicked: {
+            if (root.resolver.comparison) root.resolver.cancelComparison()
+            root.macReviewExpanded = false
+          }
         }
       }
 
       Text {
         Layout.fillWidth: true
+        visible: root.macReviewExpanded
         text: root.resolver && root.resolver.candidates.length > 1
-          ? root.resolver.candidates.length + " people use this handle. Review the possible mismatch below."
+          ? root.resolver.candidates.length + " people use this handle. Select the person whose cards you want to manage for this session. Nothing is saved as a Blip name."
           : root.selectedCandidate && root.selectedCandidate.recordCount > 1
             ? root.selectedCandidate.recordCount + " source cards found. Compare, edit, consolidate, delete, or link them from Blip."
-            : "Blip and Contacts agree. You can edit or delete the source card from Blip."
+            : "One source card found. You can review, edit, or delete it from Blip."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -640,7 +698,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate === null
-        text: "Select the correct person in step 1 before deciding which Mac cards to edit."
+        text: "Select a person below for this contact-management session. This selection is not written to identities.json."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: root.urgent
@@ -650,7 +708,7 @@ ColumnLayout {
       }
 
       Repeater {
-        model: root.resolver && root.selectedCandidate !== null ? root.resolver.candidates : []
+        model: root.resolver ? root.resolver.candidates : []
         delegate: Rectangle {
           id: sourceCandidate
           required property var modelData
@@ -663,11 +721,15 @@ ColumnLayout {
           radius: root.corner(root.space(9))
           color: intended
             ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.09)
-            : Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
+            : root.selectedCandidate
+              ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
           border.width: 1
           border.color: intended
             ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-            : Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35)
+            : root.selectedCandidate
+              ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.35)
+              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
 
           ColumnLayout {
             id: sourceGroup
@@ -679,27 +741,32 @@ ColumnLayout {
               spacing: root.space(8)
               Text {
                 Layout.fillWidth: true
-                text: (sourceCandidate.intended ? "CORRECT PERSON: " : "WRONG PERSON? ")
+                text: (sourceCandidate.intended ? "SELECTED FOR THIS SESSION: "
+                  : root.selectedCandidate ? "OTHER PERSON USING THIS HANDLE: " : "POSSIBLE PERSON: ")
                   + String(sourceCandidate.modelData.name || "")
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
-                color: sourceCandidate.intended ? root.foreground : root.urgent
+                color: sourceCandidate.intended || !root.selectedCandidate
+                  ? root.foreground : root.urgent
                 font.family: root.fontFamily
                 font.pixelSize: root.fontSize(Style.font.caption)
                 font.bold: true
               }
               SmallButton {
-                visible: sourceCandidate.intended
-                label: root.resolver && root.resolver.comparison
+                label: !sourceCandidate.intended ? "Select for this session"
+                  : root.resolver && root.resolver.comparison
                   && root.resolver.comparison.ownerToken === sourceCandidate.modelData.token
                   ? "Contact workspace open"
                   : sourceCandidate.modelData.recordCount === 1 ? "Manage contact…"
                     : "Manage " + sourceCandidate.modelData.recordCount + " cards…"
-                enabled: root.resolver && !root.resolver.loading && root.selectedChoiceIsSaved
-                  && (!root.resolver.comparison
+                enabled: root.resolver && !root.resolver.loading
+                  && (!sourceCandidate.intended || !root.resolver.comparison
                     || root.resolver.comparison.ownerToken !== sourceCandidate.modelData.token)
-                onClicked: root.resolver.compareCards(
-                  root.resolver.activeHandle, sourceCandidate.modelData.token)
+                onClicked: {
+                  if (sourceCandidate.intended) root.resolver.compareCards(
+                    root.resolver.activeHandle, sourceCandidate.modelData.token)
+                  else root.selectCandidate(sourceCandidate.modelData)
+                }
               }
               SmallButton {
                 label: sourceCandidate.cardsExpanded
@@ -713,8 +780,10 @@ ColumnLayout {
             Text {
               Layout.fillWidth: true
               text: sourceCandidate.intended
-                ? "These are the cards for the person you selected. Keep the handle here; merge or link duplicates if appropriate."
-                : "If this is a different person, open every listed card and remove only this phone number or email from that person."
+                ? "These cards are selected only for this session. Manage them without creating a Blip naming preference."
+                : root.selectedCandidate
+                  ? "If this is a different person, you can remove only this phone number or email after a separate confirmation."
+                  : "Select this person to compare and manage their source cards."
               textFormat: Text.PlainText
               wrapMode: Text.WordWrap
               color: Qt.darker(root.foreground, 1.4)
@@ -751,7 +820,7 @@ ColumnLayout {
                   onClicked: root.resolver.openOnMac(root.resolver.activeHandle, sourceCard.modelData.token)
                 }
                 SmallButton {
-                  visible: !sourceCandidate.intended && root.selectedChoiceIsSaved
+                  visible: !sourceCandidate.intended && root.selectedCandidate !== null
                     && root.resolver && root.resolver.contactWrites
                   danger: true
                   label: "Remove this handle…"
@@ -909,19 +978,6 @@ ColumnLayout {
 
       Text {
         Layout.fillWidth: true
-        visible: root.resolver && root.resolver.contactWrites
-          && root.selectedCandidate !== null && !root.selectedChoiceIsSaved
-        text: "Choose and remember the correct Contacts person in step 1 before contact linking or automatic repair is enabled."
-        textFormat: Text.PlainText
-        wrapMode: Text.WordWrap
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.caption)
-        font.bold: true
-      }
-
-      Text {
-        Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate !== null
         text: "Viewing or opening a card makes no change. Editing, deletion, consolidation, and handle removal all require a separate confirmation."
         textFormat: Text.PlainText
@@ -938,12 +994,6 @@ ColumnLayout {
           label: "Check Mac Contacts again"
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.resolver.findCandidates(root.resolver.activeHandle)
-        }
-        SmallButton {
-          visible: root.resolver && root.resolver.candidates.length === 1 && root.activeChoice !== null
-          label: "Remove portable Blip name"
-          enabled: root.resolver && !root.resolver.loading
-          onClicked: root.resolver.clearChoice(root.resolver.activeHandle)
         }
       }
       }

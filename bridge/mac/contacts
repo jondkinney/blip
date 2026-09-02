@@ -769,7 +769,7 @@ def describe_records(records: list[dict]) -> list[dict]:
 def owned_card(
     handle: object, owner_token: object, token: object
 ) -> tuple[str, str, dict, list[dict], dict, int, int]:
-    """Resolve a card only within the saved person's current active source cards."""
+    """Resolve a card only within the selected person's current active source cards."""
     original, key, candidate, records = selected_candidate(handle, owner_token)
     token_text = clean_text(token, 80)
     if not _CONTACT_TOKEN.fullmatch(token_text):
@@ -1088,13 +1088,13 @@ def inspect_repair(handle: object, token: object, owner_token: object) -> tuple[
     original, key, candidate, record, card_number, account_number = selected_card(handle, token)
     owner_text = clean_text(owner_token, 80)
     if not _CONTACT_TOKEN.fullmatch(owner_text):
-        raise ValueError("the saved owner token is invalid")
+        raise ValueError("the selected owner token is invalid")
     _, candidates, _ = contact_candidates(handle)
     owner = next((option for option in candidates if option["token"] == owner_text), None)
     if owner is None:
-        raise ValueError("the saved correct contact is no longer a candidate")
+        raise ValueError("the selected correct contact is no longer a candidate")
     if owner["token"] == candidate["token"]:
-        raise ValueError("refusing to remove a handle from the saved correct contact")
+        raise ValueError("refusing to remove a handle from the selected correct contact")
     kind = record.get("kind")
     if kind not in ("phone", "email"):
         raise RuntimeError("the selected card has no repairable field")

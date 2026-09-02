@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Split contact management from optional Blip display-name preferences. Users
+  can now compare, edit, delete, consolidate, link, and repair Mac Contacts
+  cards without first writing an `identities.json` name rule. Single matches
+  are selected for the current session; ambiguous matches require an explicit
+  session-only person selection. The UI directs deduplication straight to the
+  contact workspace and explains exactly when a portable display rule is useful.
 - Show each source card’s macOS Contacts account name (such as iCloud,
   Google, or On My Mac) throughout review, comparison, editing, and destructive
   confirmations. Name-resolution copy now distinguishes a remembered Contacts

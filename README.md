@@ -270,21 +270,29 @@ size, and corner roundness. Writes are atomic and owner-only; malformed,
 oversized, symlinked, or out-of-range files are rejected with an error in the
 settings view instead of being loaded into the long-lived shell.
 
-Settings has separate **Contacts** and **Appearance** tabs, so identity repair
+Settings has separate **Contacts** and **Appearance** tabs, so contact work
 does not share one long scroll with visual preferences. The Contacts tab lists
-direct conversations whose phone number or email resolves to more than one
-Contacts name. Opening one replaces the list with a focused detail view; use
-**All conversations** or Escape to return. Identity repair is deliberately
-split into two stages. First, selecting a candidate changes nothing; a separate
-**Use “Name” from Contacts** action writes the explicit person-to-handle
-resolution to `~/.config/blip/identities.json`; it does not create a custom
-name or edit Contacts. A name typed into the custom field is the separate
-Blip-only override. Both apply to pinned tiles, the thread list, notifications,
-and sender labels. The file is portable and safe to restore
-alongside `preferences.json`, but it contains personal names and handles, so
-only put it in a private dotfiles repository.
+direct conversations whose phone number or email needs attention. Opening one
+replaces the list with a focused detail view; use **All conversations** or
+Escape to return. The detail view then separates two independent tasks.
 
-Second, the optional Mac review stays collapsed until requested. It lists every
+**Manage Mac Contacts** is the normal path for comparing, editing, deleting,
+linking, or consolidating duplicate source cards. It selects the matching
+person only for the current UI session and never writes
+`~/.config/blip/identities.json`. When Contacts returns one person, Blip can
+open that workspace directly; when several people share the handle, the user
+must select the intended person for that session before managing cards.
+
+**Set a Blip display preference** is optional and is not part of contact
+deduplication. Use it only when Blip otherwise shows a number or an unwanted
+name. Saving a Contacts name writes an explicit portable display rule to
+`~/.config/blip/identities.json` without editing Contacts. A name typed into the
+custom field is a custom Blip-only rule. Both kinds of preference apply to
+pinned tiles, the thread list, notifications, and sender labels. The file is
+portable and safe to restore alongside `preferences.json`, but it contains
+personal names and handles, so only put it in a private dotfiles repository.
+
+The contact-management workspace lists every
 active matching source card separately, with large duplicate sets collapsed
 again. Raw account databases sometimes retain historical cache rows that the
 Contacts object layer no longer exposes; Blip verifies and omits those rows so

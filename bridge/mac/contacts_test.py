@@ -398,7 +398,7 @@ class ContactResolverTests(unittest.TestCase):
             contacts, "contact_candidates",
             return_value=("+15550100001", [correct, wrong], {}),
         ), mock.patch.object(contacts, "run_contact_repair") as repair:
-            with self.assertRaisesRegex(ValueError, "saved correct contact"):
+            with self.assertRaisesRegex(ValueError, "selected correct contact"):
                 contacts.inspect_repair(
                     "+15550100001", "sha256:" + "a" * 64, correct["token"]
                 )

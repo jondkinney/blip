@@ -9,6 +9,7 @@ const contactCompare = readFileSync(new URL("./ContactCardCompare.qml", import.m
 const contactEditor = readFileSync(new URL("./ContactCardEditor.qml", import.meta.url), "utf8");
 const settings = readFileSync(new URL("./BlipSettings.qml", import.meta.url), "utf8");
 const identities = readFileSync(new URL("./BlipIdentities.qml", import.meta.url), "utf8");
+const identityHelper = readFileSync(new URL("./identities.ts", import.meta.url), "utf8");
 const preferences = readFileSync(new URL("./BlipPreferences.qml", import.meta.url), "utf8");
 
 describe("QML safety invariants", () => {
@@ -48,15 +49,23 @@ describe("QML safety invariants", () => {
     expect(mark).toBeGreaterThan(success);
   });
 
-  test("identity repair separates harmless selection, Blip writes, and Mac review", () => {
-    expect(identitySettings).toContain("Selecting a Contacts person changes nothing");
-    expect(identitySettings).toContain("Use this Contacts name");
-    expect(identitySettings).toContain("custom Blip-only name");
-    expect(identitySettings).toContain("MAC CONTACTS · OPTIONAL");
+  test("contact management and optional Blip display preferences are separate flows", () => {
+    expect(identitySettings).toContain("What do you want to do? These are separate workflows.");
+    expect(identitySettings).toContain("rowSpacing: root.space(12)");
+    expect(identitySettings).toContain("columnSpacing: root.space(12)");
+    expect(identitySettings).toContain("MANAGE MAC CONTACTS");
+    expect(identitySettings).toContain("This never creates a Blip display-name preference.");
+    expect(identitySettings).toContain("Skip this when you only want to deduplicate Contacts.");
+    expect(identitySettings).toContain("OPTIONAL BLIP DISPLAY NAME");
+    expect(identitySettings).toContain("Save Contacts name as display preference");
+    expect(identitySettings).toContain("CUSTOM BLIP-ONLY DISPLAY NAME");
+    expect(identitySettings).toContain("This selection is not written to identities.json.");
     expect(identitySettings).toContain("Viewing or opening a card makes no change");
     expect(identitySettings).toContain("Check Mac Contacts again");
-    expect(identitySettings).toContain("FROM CONTACTS · CONTACT UNCHANGED");
-    expect(identitySettings).toContain("name currently found in Contacts");
+    expect(identitySettings).toContain("root.resolver.candidates.length === 1");
+    expect(identitySettings).not.toContain("root.selectedChoiceIsSaved\n                  && (!root.resolver.comparison");
+    expect(identityHelper).not.toContain("requireSavedRepairOwner");
+    expect(identityHelper).not.toContain("save the correct Contacts name in Blip before repairing");
     expect(identitySettings).not.toContain("MATCH REMEMBERED BY BLIP");
     expect(identitySettings).not.toContain("Already saved in Blip\"");
     expect(identitySettings).not.toContain('label: "Use"');
@@ -71,7 +80,8 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain('label: "← All conversations"');
     expect(identitySettings).toContain("visible: !root.reviewActive");
     expect(identitySettings).toContain("visible: root.macReviewExpanded");
-    expect(identitySettings).toContain("Review Contacts cards…");
+    expect(identitySettings).toContain("function openContactManagement()");
+    expect(identitySettings).toContain("Manage Contacts…");
     expect(identitySettings).toContain("sourceCandidate.cardsExpanded ? sourceCandidate.modelData.cards : []");
     expect(identitySettings).toContain("root.candidateForToken(saved.contactToken)");
     expect(settings).toContain('text: "Saved as portable JSON files"');
