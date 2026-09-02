@@ -10,6 +10,7 @@ ColumnLayout {
 
   property var resolver: null
   property var threads: []
+  property var preferences: null
   property color foreground: Color.foreground
   property color urgent: Color.urgent
   property color accent: Color.accent
@@ -23,7 +24,11 @@ ColumnLayout {
   readonly property bool editorActive: customField.activeFocus
   readonly property bool reviewActive: resolver && resolver.activeHandle !== ""
   readonly property var savedChoices: resolver ? resolver.identities : []
-  readonly property var unresolved: unresolvedThreads(threads)
+  readonly property bool hideShortCodeConversations: !preferences
+    || preferences.hideShortCodeConversations
+  readonly property var unresolvedWithShortCodes: unresolvedThreads(threads, true)
+  readonly property var unresolved: unresolvedThreads(threads, !hideShortCodeConversations)
+  readonly property int hiddenShortCodeCount: shortCodeCount(unresolvedWithShortCodes)
   readonly property var selectedCandidate: candidateForToken(selectedToken)
   readonly property var activeChoice: choiceForHandle(resolver ? resolver.activeHandle : "")
   readonly property bool selectedChoiceIsSaved: selectedCandidate && activeChoice
@@ -46,7 +51,20 @@ ColumnLayout {
     var digits = handle.replace(/\D/g, "")
     return "phone:" + (digits.length >= 10 ? digits.slice(-10) : digits)
   }
-  function unresolvedThreads(value) {
+  function likelyServiceHandle(value) {
+    var handle = String(value || "")
+    return handle.indexOf("@") < 0 && handle.replace(/\D/g, "").length < 10
+  }
+  function unresolvedDetail(thread) {
+    var handle = String(thread && (thread.handle || thread.chat) || "")
+    var detail = likelyServiceHandle(handle)
+      ? "Short code or service sender · usually no contact cleanup needed"
+      : handle.indexOf("@") >= 0
+        ? "Email address · no single Contacts name found"
+        : "Phone number · no single Contacts name found"
+    return detail + (thread && thread.pinned === true ? " · Pinned" : "")
+  }
+  function unresolvedThreads(value, includeShortCodes) {
     if (!Array.isArray(value)) return []
     var seen = ({})
     var result = []
@@ -57,6 +75,7 @@ ColumnLayout {
       var handle = String(thread.handle || chat)
       var name = String(thread.name || "")
       if (!directHandle(chat) || (name !== chat && name !== handle && !directHandle(name))) continue
+      if (includeShortCodes !== true && likelyServiceHandle(handle)) continue
       if (seen[chat]) continue
       seen[chat] = true
       result.push(thread)
@@ -67,7 +86,15 @@ ColumnLayout {
       if (ap !== bp) return ap - bp
       return String(a.last_ts || "") < String(b.last_ts || "") ? 1 : -1
     })
-    return result.slice(0, 12)
+    return result
+  }
+  function shortCodeCount(value) {
+    if (!Array.isArray(value)) return 0
+    var count = 0
+    for (var i = 0; i < value.length; i++) {
+      if (likelyServiceHandle(value[i] && (value[i].handle || value[i].chat))) count++
+    }
+    return count
   }
   function choiceForHandle(handle) {
     var key = handleKey(handle)
@@ -166,7 +193,7 @@ ColumnLayout {
 
   Text {
     Layout.fillWidth: true
-    text: "Open a conversation to choose one of two separate tasks: manage its Mac contact cards, or save an optional Blip display-name preference. Contact management never creates a naming preference."
+    text: "Choose a conversation to inspect the Mac contact cards Blip found for it. You can clean up Contacts without creating a Blip-specific display name."
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: Qt.darker(root.foreground, 1.35)
@@ -241,43 +268,133 @@ ColumnLayout {
     }
   }
 
-  Text {
+  RowLayout {
     Layout.fillWidth: true
-    visible: root.unresolved.length > 0
-    text: "NEEDS A DISPLAY NAME"
-    textFormat: Text.PlainText
-    color: Qt.darker(root.foreground, 1.25)
-    font.family: root.fontFamily
-    font.pixelSize: root.fontSize(Style.font.caption)
-    font.bold: true
-  }
-
-  Repeater {
-    model: root.unresolved
-    delegate: RowLayout {
-      required property var modelData
+    visible: root.unresolvedWithShortCodes.length > 0
+    spacing: root.space(10)
+    Text {
       Layout.fillWidth: true
-      spacing: root.space(8)
-      Text {
-        Layout.fillWidth: true
-        text: String(modelData.chat || "") + (modelData.pinned === true ? " · Pinned" : "")
-        textFormat: Text.PlainText
-        elide: Text.ElideMiddle
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.bodySmall)
-      }
-      SmallButton {
-        label: "Open…"
-        enabled: root.resolver && !root.resolver.loading
-        onClicked: root.beginReview(modelData.chat)
+      text: "CONVERSATIONS SHOWN AS NUMBERS"
+      textFormat: Text.PlainText
+      color: Qt.darker(root.foreground, 1.25)
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.caption)
+      font.bold: true
+    }
+    ToggleSwitch {
+      label: "Hide short-code senders"
+      checked: root.hideShortCodeConversations
+      enabled: root.preferences && root.preferences.loaded
+      onToggled: function(value) {
+        if (root.preferences) root.preferences.setBoolean("hideShortCodeConversations", value)
       }
     }
   }
 
   Text {
     Layout.fillWidth: true
-    visible: root.savedChoices.length === 0 && root.unresolved.length === 0
+    visible: root.unresolvedWithShortCodes.length > 0
+    text: root.hideShortCodeConversations
+      ? root.unresolved.length + (root.unresolved.length === 1
+        ? " phone/email conversation to review · "
+        : " phone/email conversations to review · ")
+        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
+          ? " short-code/service conversation hidden."
+          : " short-code/service conversations hidden.")
+      : root.unresolved.length + " conversations shown · "
+        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
+          ? " looks like a short-code/service sender."
+          : " look like short-code/service senders.")
+    textFormat: Text.PlainText
+    color: Qt.darker(root.foreground, 1.4)
+    font.family: root.fontFamily
+    font.pixelSize: root.fontSize(Style.font.caption)
+  }
+
+  Rectangle {
+    Layout.fillWidth: true
+    visible: root.unresolvedWithShortCodes.length > 0
+    implicitHeight: unresolvedHelp.implicitHeight + root.space(20)
+    radius: root.corner(root.space(9))
+    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.07)
+    border.width: 1
+    border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.32)
+    ColumnLayout {
+      id: unresolvedHelp
+      anchors.fill: parent
+      anchors.margins: root.space(10)
+      spacing: root.space(4)
+      Text {
+        Layout.fillWidth: true
+        text: "WHY THEY ARE HERE"
+        textFormat: Text.PlainText
+        color: root.accent
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+        font.bold: true
+      }
+      Text {
+        Layout.fillWidth: true
+        text: "Blip is using the phone number or email because Contacts did not provide one unambiguous name. Review a person to compare or merge matching Mac cards, or optionally choose what Blip displays. Short codes and service senders can simply be left alone. Nothing changes until you review and confirm it."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.bodySmall)
+      }
+    }
+  }
+
+  Repeater {
+    model: root.unresolved
+    delegate: Rectangle {
+      required property var modelData
+      Layout.fillWidth: true
+      implicitHeight: unresolvedRow.implicitHeight + root.space(16)
+      radius: root.corner(root.space(9))
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
+      border.width: 1
+      border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.13)
+      RowLayout {
+        id: unresolvedRow
+        anchors.fill: parent
+        anchors.margins: root.space(8)
+        spacing: root.space(10)
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: root.space(2)
+          Text {
+            Layout.fillWidth: true
+            text: String(modelData.chat || "")
+            textFormat: Text.PlainText
+            elide: Text.ElideMiddle
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.bodySmall)
+            font.bold: true
+          }
+          Text {
+            Layout.fillWidth: true
+            text: root.unresolvedDetail(modelData)
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.caption)
+          }
+        }
+        SmallButton {
+          label: root.likelyServiceHandle(modelData.chat) ? "Review anyway…" : "Review contact…"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: root.beginReview(modelData.chat)
+        }
+      }
+    }
+  }
+
+  Text {
+    Layout.fillWidth: true
+    visible: root.savedChoices.length === 0 && root.unresolvedWithShortCodes.length === 0
     text: root.resolver && !root.resolver.loaded ? "Loading contact names…" : "No unresolved direct conversations."
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.4)
@@ -1064,5 +1181,43 @@ ColumnLayout {
     }
     HoverHandler { id: buttonHover; enabled: button.enabled; cursorShape: Qt.PointingHandCursor }
     TapHandler { enabled: button.enabled; onTapped: button.clicked() }
+  }
+
+  component ToggleSwitch: RowLayout {
+    id: toggle
+    property string label: ""
+    property bool checked: false
+    signal toggled(bool value)
+    spacing: root.space(7)
+    opacity: enabled ? 1.0 : 0.45
+    Text {
+      text: toggle.label
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.caption)
+    }
+    Rectangle {
+      Layout.preferredWidth: root.space(34)
+      Layout.preferredHeight: root.space(20)
+      radius: height / 2
+      color: toggle.checked
+        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.65)
+        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+      border.width: 1
+      border.color: toggle.checked ? root.accent
+        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
+      Rectangle {
+        width: parent.height - root.space(6)
+        height: width
+        radius: width / 2
+        anchors.verticalCenter: parent.verticalCenter
+        x: toggle.checked ? parent.width - width - root.space(3) : root.space(3)
+        color: toggle.checked ? root.foreground
+          : Qt.darker(root.foreground, 1.35)
+      }
+    }
+    HoverHandler { enabled: toggle.enabled; cursorShape: Qt.PointingHandCursor }
+    TapHandler { enabled: toggle.enabled; onTapped: toggle.toggled(!toggle.checked) }
   }
 }

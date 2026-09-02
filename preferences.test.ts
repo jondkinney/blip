@@ -51,6 +51,20 @@ describe("preference schema", () => {
     });
   });
 
+  test("hides short-code conversations by default and validates the toggle", () => {
+    const legacy = { ...DEFAULT_PREFERENCES } as Record<string, unknown>;
+    delete legacy.hideShortCodeConversations;
+    expect(normalizePreferences(legacy).hideShortCodeConversations).toBe(true);
+    expect(normalizePreferences({
+      ...DEFAULT_PREFERENCES,
+      hideShortCodeConversations: false,
+    }).hideShortCodeConversations).toBe(false);
+    expect(() => normalizePreferences({
+      ...DEFAULT_PREFERENCES,
+      hideShortCodeConversations: "yes",
+    })).toThrow("boolean");
+  });
+
   test("rejects every wrong top-level JSON type", () => {
     for (const value of [null, [], "x", 1, true])
       expect(() => normalizePreferences(value)).toThrow("JSON object");

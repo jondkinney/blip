@@ -31,10 +31,39 @@ ColumnLayout {
   function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
   function corner(value) { return Math.max(0, Math.round(value * cornerScale)) }
   function text(value) { return String(value || "") }
-  function loadModel(model, values) {
+  function cleanLabel(value) {
+    var label = text(value)
+    var apple = /^_\$!<(.+)>!\$_$/.exec(label)
+    return apple ? apple[1] : label
+  }
+  function loadValueModel(model, values) {
     model.clear()
     var source = Array.isArray(values) ? values : []
-    for (var i = 0; i < source.length && i < 16; i++) model.append(source[i])
+    for (var i = 0; i < source.length && i < 16; i++) {
+      var item = source[i] || ({})
+      model.append({
+        label: cleanLabel(item.label),
+        originalLabel: text(item.label),
+        value: text(item.value)
+      })
+    }
+  }
+  function loadAddressModel(model, values) {
+    model.clear()
+    var source = Array.isArray(values) ? values : []
+    for (var i = 0; i < source.length && i < 16; i++) {
+      var item = source[i] || ({})
+      model.append({
+        label: cleanLabel(item.label),
+        originalLabel: text(item.label),
+        street: text(item.street),
+        city: text(item.city),
+        state: text(item.state),
+        postalCode: text(item.postalCode),
+        country: text(item.country),
+        countryCode: text(item.countryCode)
+      })
+    }
   }
   function reload() {
     var source = initialCard || card
@@ -48,17 +77,24 @@ ColumnLayout {
     jobTitle.text = text(source.jobTitle)
     birthday.text = text(source.birthday)
     notes.text = text(source.note)
-    loadModel(phones, source.phones)
-    loadModel(emails, source.emails)
-    loadModel(urls, source.urls)
-    loadModel(addresses, source.addresses)
+    loadValueModel(phones, source.phones)
+    loadValueModel(emails, source.emails)
+    loadValueModel(urls, source.urls)
+    loadAddressModel(addresses, source.addresses)
   }
   function modelValues(model, keys) {
     var result = []
     for (var i = 0; i < model.count; i++) {
       var source = model.get(i)
       var item = ({})
-      for (var j = 0; j < keys.length; j++) item[keys[j]] = text(source[keys[j]]).trim()
+      for (var j = 0; j < keys.length; j++) {
+        var key = keys[j]
+        var value = text(source[key]).trim()
+        if (key === "label") {
+          var original = text(source.originalLabel).trim()
+          item[key] = original !== "" && value === cleanLabel(original) ? original : value
+        } else item[key] = value
+      }
       var meaningful = false
       for (var k = 0; k < keys.length; k++) {
         if (keys[k] !== "label" && item[keys[k]] !== "") meaningful = true
@@ -162,12 +198,6 @@ ColumnLayout {
   RowLayout {
     Layout.fillWidth: true
     SectionTitle { Layout.fillWidth: true; label: "POSTAL ADDRESSES" }
-    ActionButton {
-      label: "Add address"
-      enabled: addresses.count < 16 && !root.previewOpen
-      onClicked: addresses.append({ label: "", street: "", city: "", state: "",
-        postalCode: "", country: "", countryCode: "" })
-    }
   }
   Text {
     Layout.fillWidth: true
@@ -220,6 +250,18 @@ ColumnLayout {
           AddressField { title: "Country code"; role: "countryCode"; value: addressRow.countryCode; row: addressRow.index; maximum: 8 }
         }
       }
+    }
+  }
+  RowLayout {
+    Layout.fillWidth: true
+    Layout.topMargin: root.space(2)
+    Layout.bottomMargin: root.space(4)
+    Item { Layout.fillWidth: true }
+    ActionButton {
+      label: "Add address"
+      enabled: addresses.count < 16 && !root.previewOpen
+      onClicked: addresses.append({ label: "", originalLabel: "", street: "", city: "", state: "",
+        postalCode: "", country: "", countryCode: "" })
     }
   }
 
@@ -300,15 +342,7 @@ ColumnLayout {
     required property ListModel model
     Layout.fillWidth: true
     spacing: root.space(6)
-    RowLayout {
-      Layout.fillWidth: true
-      SectionTitle { Layout.fillWidth: true; label: parent.parent.title }
-      ActionButton {
-        label: parent.parent.emptyLabel
-        enabled: parent.parent.model.count < 16 && !root.previewOpen
-        onClicked: parent.parent.model.append({ label: "", value: "" })
-      }
-    }
+    SectionTitle { label: valueList.title }
     Text {
       Layout.fillWidth: true
       visible: parent.model.count === 0
@@ -347,6 +381,17 @@ ColumnLayout {
           onTextChanged: valueList.model.setProperty(valueRow.index, "value", text)
         }
         ActionButton { danger: true; label: "Remove"; enabled: !root.previewOpen; onClicked: valueList.model.remove(valueRow.index) }
+      }
+    }
+    RowLayout {
+      Layout.fillWidth: true
+      Layout.topMargin: root.space(2)
+      Layout.bottomMargin: root.space(4)
+      Item { Layout.fillWidth: true }
+      ActionButton {
+        label: valueList.emptyLabel
+        enabled: valueList.model.count < 16 && !root.previewOpen
+        onClicked: valueList.model.append({ label: "", originalLabel: "", value: "" })
       }
     }
   }

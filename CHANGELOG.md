@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Clarify why unresolved conversations appear in Contacts settings, distinguish
+  likely service short codes from people, and hide those short-code rows by
+  default behind a portable preference toggle. The review queue now reports
+  its full count and scrolls through every matching conversation instead of
+  silently stopping after twelve.
+- Place repeatable contact-field add actions beneath their current values and
+  show Apple’s standard phone labels as Mobile, Home, and Work while preserving
+  their original localized tokens when a contact draft is saved.
 - Split contact management from optional Blip display-name preferences. Users
   can now compare, edit, delete, consolidate, link, and repair Mac Contacts
   cards without first writing an `identities.json` name rule. Single matches
