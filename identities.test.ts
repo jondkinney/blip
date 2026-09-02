@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -462,6 +465,36 @@ describe("collector identity application", () => {
 });
 
 describe("identity CLI streaming boundary", () => {
+  test("contact comparison does not require or create a display-name preference", () => {
+    const { root } = fixture();
+    const bin = join(root, "bin");
+    const contacts = join(bin, "contacts");
+    const identities = join(root, "missing", "identities.json");
+    const response = JSON.stringify({
+      ok: true, handle: "+15550100001", name: "Alex Rivera",
+      cardCount: 1, sourceCount: 1, writeEnabled: true,
+      cards: [{
+        token: cardToken("b"), revision: cardToken("c"), cardNumber: 1,
+        accountNumber: 1, sourceName: "iCloud", hasPhoto: false,
+        displayName: "Alex Rivera", firstName: "Alex", middleName: "",
+        lastName: "Rivera", nickname: "", organization: "", department: "",
+        jobTitle: "", birthday: "", note: "", phones: [], emails: [], urls: [], addresses: [],
+      }],
+    }) + "\n";
+    mkdirSync(bin);
+    writeFileSync(contacts, `#!/usr/bin/env bun\nprocess.stdout.write(${JSON.stringify(response)})\n`);
+    chmodSync(contacts, 0o700);
+
+    const result = spawnSync("bun", [join(import.meta.dir, "identities.ts"), "compare"], {
+      env: { ...process.env, HOME: root, BLIP_IDENTITIES_PATH: identities },
+      input: JSON.stringify({ handle: "+15550100001", ownerToken: token }),
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).comparison.name).toBe("Alex Rivera");
+    expect(existsSync(identities)).toBe(false);
+  });
+
   test("exits before an oversized producer closes stdin", async () => {
     const { path } = fixture();
     const child = Bun.spawn(["bun", join(import.meta.dir, "identities.ts"), "custom"], {

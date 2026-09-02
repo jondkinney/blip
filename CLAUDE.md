@@ -105,8 +105,12 @@ what it is handed. Keep it that way.
 - **Ambiguous contact names are explicit choices, never guesses.**
   `~/.config/blip/identities.json` is a portable, versioned, owner-only map
   validated and written by `identities.ts`. Candidate lookups are bounded on
-  both sides of ssh and carry the handle via stdin. Candidate selection does
-  not write; the UI has a separately labeled Blip-only save. Mac review uses
+  both sides of ssh and carry the handle via stdin. A display-name preference
+  is optional and separate from contact management. Session-only candidate
+  selection must be enough to compare, edit, delete, consolidate, link, or
+  repair cards; those operations must never require or create an
+  `identities.json` entry. Saving a display preference remains an explicit,
+  separately labeled action. Mac review uses
   opaque per-card tokens to open an exact validated `addressbook://` record in
   Contacts.app. Card comparison returns bounded selected-card fields and opaque
   content revisions with raw ids retained on the Mac. Full-card edits,

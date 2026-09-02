@@ -1100,20 +1100,6 @@ function withoutChoice(config: IdentityConfig, handle: string): IdentityConfig {
   });
 }
 
-function requireSavedRepairOwner(path: string, handle: unknown, ownerToken: unknown): void {
-  const requested = normalizeHandle(handle);
-  const requestedKey = identityKey(requested);
-  const token = normalizeContactToken(ownerToken);
-  const config = readIdentities(path).config;
-  for (const [savedHandle, choice] of Object.entries(config.identities)) {
-    if (identityKey(savedHandle) !== requestedKey) continue;
-    if (choice.source !== "contacts" || choice.contactToken !== token)
-      throw new Error("save the correct Contacts name in Blip before repairing another card");
-    return;
-  }
-  throw new Error("save the correct Contacts name in Blip before repairing another card");
-}
-
 async function main(): Promise<void> {
   const operation = process.argv[2] || "read";
   const path = identitiesPath();
@@ -1185,7 +1171,6 @@ async function main(): Promise<void> {
     if (operation === "compare" || operation === "link-prepare" || operation === "link") {
       if (operation !== "compare" && !contactWritesEnabled())
         throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
-      requireSavedRepairOwner(path, request.handle, request.ownerToken);
       const result = resolveOnMac(
         operation, request.handle, request.ownerToken, spawnSync, undefined, request.expectedAction,
       );
@@ -1200,7 +1185,6 @@ async function main(): Promise<void> {
       const applying = operation === "edit" || operation === "delete" || operation === "merge";
       if (applying && !contactWritesEnabled())
         throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
-      requireSavedRepairOwner(path, request.handle, request.ownerToken);
       const result = contactMutationOnMac(mutationOperation, request);
       if (result.preview) emit({ ok: true, preview: result.preview });
       else emit({ ok: true, ...result.result });
@@ -1209,7 +1193,6 @@ async function main(): Promise<void> {
     if (operation === "inspect" || operation === "remove") {
       if (!contactWritesEnabled())
         throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
-      requireSavedRepairOwner(path, request.handle, request.ownerToken);
       const result = resolveOnMac(operation, request.handle, request.token, spawnSync, request.ownerToken);
       if (operation === "inspect") emit({ ok: true, preview: result.preview });
       else emit({ ok: true, ...result.removal });

@@ -384,7 +384,7 @@ Item {
   }
 
   function choose(handle, name, token) {
-    notice = "Saving a Blip-only display name…"
+    notice = "Saving an optional display preference in Blip…"
     return start("choose", { handle: handle, name: name, token: token })
   }
 
@@ -394,7 +394,7 @@ Item {
   }
 
   function clearChoice(handle) {
-    notice = "Removing the Blip-only override…"
+    notice = "Removing the portable display preference…"
     return start("clear", { handle: handle })
   }
 
