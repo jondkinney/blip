@@ -83,6 +83,21 @@ describe("QML safety invariants", () => {
     expect(identitySettings).not.toContain("Fix on Mac");
   });
 
+  test("contact cleanup scan is read-only triage, never a bulk merge", () => {
+    expect(identitySettings).toContain("FIND CONTACTS CLEANUP OPPORTUNITIES");
+    expect(identitySettings).toContain("Run a read-only Mac Contacts scan");
+    expect(identitySettings).toContain("likely duplicates");
+    expect(identitySettings).toContain("naming conflicts");
+    expect(identitySettings).toContain("Review duplicate…");
+    expect(identitySettings).toContain("Review conflict…");
+    expect(identitySettings).toContain("Focus on ");
+    expect(identitySettings).toContain("Every contact change still opens its own preview and confirmation.");
+    expect(identitySettings).not.toContain("Merge all");
+    expect(identities).toContain("function auditContacts(handles)");
+    expect(identities).toContain('currentOperation === "audit"');
+    expect(identityHelper).toContain('operation === "audit"');
+  });
+
   test("settings navigation keeps contact repair compact and separate from appearance", () => {
     expect(settings).toContain('property string page: "contacts"');
     expect(settings).toContain('visible: root.page === "contacts"');

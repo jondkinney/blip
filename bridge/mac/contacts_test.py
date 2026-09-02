@@ -125,6 +125,34 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual([candidate["name"] for candidate in candidates], ["Alex Rivera"])
         self.assertNotIn("mom", by_name)
 
+    def test_contact_audit_classifies_matches_without_returning_unmatched_handles(self):
+        one = {"name": "Alex", "recordCount": 1, "sourceCount": 1, "cards": []}
+        duplicate = {"name": "Pat", "recordCount": 2, "sourceCount": 2, "cards": []}
+        conflict = {"name": "Sam", "recordCount": 1, "sourceCount": 1, "cards": []}
+        responses = {
+            "5550100001": ("+15550100001", [one], {}),
+            "5550100002": ("+15550100002", [duplicate], {}),
+            "5550100003": ("+15550100003", [one, conflict], {}),
+            "5550100004": ("+15550100004", [], {}),
+        }
+        with mock.patch.object(
+            contacts, "contact_candidates",
+            side_effect=lambda handle: responses[contacts.normalize_resolve_handle(handle)[1]],
+        ):
+            result = contacts.audit_contact_handles(list(row[0] for row in responses.values()))
+        self.assertEqual(result["handleCount"], 4)
+        self.assertEqual(result["noMatchCount"], 1)
+        self.assertEqual([row["handle"] for row in result["singleCards"]], ["+15550100001"])
+        self.assertEqual([row["handle"] for row in result["duplicates"]], ["+15550100002"])
+        self.assertEqual([row["handle"] for row in result["conflicts"]], ["+15550100003"])
+        self.assertNotIn("+15550100004", json.dumps(result))
+
+    def test_contact_audit_rejects_duplicate_or_excessive_handles(self):
+        with self.assertRaisesRegex(ValueError, "duplicate handle"):
+            contacts.audit_contact_handles(["+15550100001", "5550100001"])
+        with self.assertRaisesRegex(ValueError, "handle list"):
+            contacts.audit_contact_handles(["+15550100001"] * (contacts.MAX_AUDIT_HANDLES + 1))
+
     def test_active_card_filter_rejects_ids_the_object_layer_did_not_receive(self):
         records = [{"uid": "active"}, {"uid": "inactive"}]
         with mock.patch.object(

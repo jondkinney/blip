@@ -60,6 +60,7 @@ MAX_HANDLE_CHARS = 320
 MAX_NAME_CHARS = 160
 MAX_SOURCE_NAME_CHARS = 120
 MAX_REPAIR_FIELDS = 8
+MAX_AUDIT_HANDLES = 200
 MAX_REPAIR_INPUT_BYTES = 48 * 1024
 MAX_REPAIR_PROCESS_BYTES = 48 * 1024
 MAX_UNDO_BYTES = 48 * 1024
@@ -362,6 +363,39 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
     for candidate in candidates:
         del candidate["_modified"]
     return original, candidates, by_name
+
+
+def audit_contact_handles(value: object) -> dict:
+    """Classify a bounded handle list without changing Contacts or returning unmatched handles."""
+    if not isinstance(value, list) or not value or len(value) > MAX_AUDIT_HANDLES:
+        raise ValueError("contact audit handle list is invalid")
+    seen: set[str] = set()
+    single_cards = []
+    duplicates = []
+    conflicts = []
+    no_match_count = 0
+    for raw_handle in value:
+        original, key, _ = normalize_resolve_handle(raw_handle)
+        if key in seen:
+            raise ValueError("contact audit contains a duplicate handle")
+        seen.add(key)
+        resolved, candidates, _ = contact_candidates(original)
+        entry = {"handle": resolved, "candidates": candidates}
+        if not candidates:
+            no_match_count += 1
+        elif len(candidates) > 1:
+            conflicts.append(entry)
+        elif candidates[0]["recordCount"] > 1:
+            duplicates.append(entry)
+        else:
+            single_cards.append(entry)
+    return {
+        "handleCount": len(value),
+        "noMatchCount": no_match_count,
+        "singleCards": single_cards,
+        "duplicates": duplicates,
+        "conflicts": conflicts,
+    }
 
 
 def read_resolve_request() -> dict:
@@ -1244,6 +1278,9 @@ def _cmd_resolve(args):
             "candidates": candidates,
         })
         return
+    if operation == "audit":
+        emit_resolve({"ok": True, **audit_contact_handles(request.get("handles"))})
+        return
     if operation == "open":
         _, _, selected, selected_record, selected_card_number, selected_account_number = selected_card(
             request.get("handle"), request.get("token")
@@ -1339,7 +1376,7 @@ def _cmd_resolve(args):
         emit_resolve({"ok": True, **result})
         return
     raise ValueError(
-        "operation must be candidates, open, compare, edit-prepare, edit, delete-prepare, "
+        "operation must be candidates, audit, open, compare, edit-prepare, edit, delete-prepare, "
         "delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo"
     )
 

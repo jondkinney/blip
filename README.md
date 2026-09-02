@@ -279,6 +279,16 @@ portable toggle to reveal them. Opening one
 replaces the list with a focused detail view; use **All conversations** or
 Escape to return. The detail view then separates two independent tasks.
 
+**Find Contacts cleanup opportunities** runs one read-only scan across the
+phone and email conversations in that queue. It groups the results into no
+matching card, one-card matches, same-name multi-card duplicate candidates,
+and handles attached to conflicting names. The result can filter the full list
+down to Contacts matches and provides direct review buttons for duplicates and
+conflicts. A shared handle or an iCloud/Google pairing is only evidence: the
+scan never changes a display name or contact, and Blip deliberately does not
+offer a blind bulk merge. Every upstream edit, deletion, link, or consolidation
+still gets a person-specific preview and confirmation.
+
 **Manage Mac Contacts** is the normal path for comparing, editing, deleting,
 linking, or consolidating duplicate source cards. It selects the matching
 person only for the current UI session and never writes

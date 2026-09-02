@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyIdentityOverrides, applyThreadIdentityOverrides, type Thread } from "./collector";
 import {
+  auditContactsOnMac,
   contactWritesEnabled,
   contactMutationOnMac,
   identityKey,
@@ -24,6 +25,7 @@ import {
   MAX_IDENTITY_REQUEST_BYTES,
   normalizeBridgeCandidates,
   normalizeContactComparison,
+  normalizeContactAudit,
   normalizeContactDraft,
   normalizeIdentityConfig,
   normalizeRepairPreview,
@@ -251,6 +253,68 @@ describe("Mac candidate boundary", () => {
     expect(capturedArgs.join(" ")).not.toContain("15550100001");
     expect(JSON.parse(capturedInput).handle).toBe("+15550100001");
     expect(result.candidates?.[0]?.name).toBe("Alex Rivera");
+  });
+
+  test("contact audit classifies a bounded handle batch through one bridge call", () => {
+    let capturedInput = "";
+    const single = {
+      token, name: "Alex Rivera", recordCount: 1, sourceCount: 1, hasPhoto: false,
+      cards: [{ token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: false }],
+    };
+    const duplicate = {
+      token: cardToken("c"), name: "Pat Rivera", recordCount: 2, sourceCount: 2, hasPhoto: false,
+      cards: [
+        { token: cardToken("d"), accountNumber: 1, sourceName: "Gmail", hasPhoto: false },
+        { token: cardToken("e"), accountNumber: 2, sourceName: "iCloud", hasPhoto: false },
+      ],
+    };
+    const runner = ((_command: string, args: string[], options: any) => {
+      capturedInput = options.input;
+      return {
+        status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+        stdout: JSON.stringify({
+          ok: true, handleCount: 3, noMatchCount: 1,
+          singleCards: [{ handle: "+15550100001", candidates: [single] }],
+          duplicates: [{ handle: "+15550100002", candidates: [duplicate] }],
+          conflicts: [],
+        }),
+      };
+    }) as any;
+    const result = auditContactsOnMac(
+      ["+15550100001", "+15550100002", "+15550100003"], runner,
+    );
+    expect(result.noMatchCount).toBe(1);
+    expect(result.singleCards[0]?.candidates[0]?.name).toBe("Alex Rivera");
+    expect(result.duplicates[0]?.candidates[0]?.recordCount).toBe(2);
+    expect(JSON.parse(capturedInput)).toEqual({
+      operation: "audit", handles: ["+15550100001", "+15550100002", "+15550100003"],
+    });
+  });
+
+  test("contact audit rejects inconsistent totals and category shapes", () => {
+    const single = {
+      token, name: "Alex Rivera", recordCount: 1, sourceCount: 1, hasPhoto: false,
+      cards: [{ token: cardToken("b"), accountNumber: 1, sourceName: "iCloud", hasPhoto: false }],
+    };
+    const base = {
+      handleCount: 1, noMatchCount: 0,
+      singleCards: [{ handle: "+15550100001", candidates: [single] }],
+      duplicates: [], conflicts: [],
+    };
+    expect(() => normalizeContactAudit({ ...base, noMatchCount: 1 }, 1)).toThrow("totals");
+    expect(() => normalizeContactAudit({
+      ...base, singleCards: [], duplicates: [{ handle: "+15550100001", candidates: [single] }],
+    }, 1)).toThrow("duplicate-card");
+    expect(() => auditContactsOnMac(["+15550100001", "5550100001"])).toThrow("duplicate handle");
+    const wrongHandleRunner = (() => ({
+      status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+      stdout: JSON.stringify({
+        ok: true, handleCount: 1, noMatchCount: 0,
+        singleCards: [{ handle: "+15550199999", candidates: [single] }],
+        duplicates: [], conflicts: [],
+      }),
+    })) as any;
+    expect(() => auditContactsOnMac(["+15550100001"], wrongHandleRunner)).toThrow("unrequested");
   });
 
   test("exact-card open keeps its token on stdin and validates card metadata", () => {
