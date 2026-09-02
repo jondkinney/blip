@@ -6,7 +6,7 @@
 #   1. copies the bridge tools into ~/.blip/bin (imsg, imsg-send, imsg-read, contacts,
 #      tcc-check, blip-check) — read-only sqlite over chat.db, AppleScript
 #      send, Contacts — plus the static contact-repair.js Automation helper,
-#      the compiled contact-delete helper that uses Apple's current Contacts framework,
+#      the compiled contact-mutation helper that uses Apple's current Contacts framework,
 #      the scoped contact-link.applescript UI handoff, and blip-dispatch, the forced-command gate that
 #      confines Blip's dedicated ssh key to exactly those tools;
 #   2. makes sure Remote Login (sshd) is on, since Blip talks over ssh;

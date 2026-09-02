@@ -663,18 +663,13 @@ def run_contact_repair(request: dict) -> dict:
     return response
 
 
-def run_contact_delete(person_uids: list[str]) -> dict:
-    if (not 1 <= len(person_uids) <= 7 or len(set(person_uids)) != len(person_uids)
-            or any(not _PERSON_UID.fullmatch(uid) for uid in person_uids)):
-        raise RuntimeError("Contacts deletion card list is invalid")
+def run_native_contact_mutation(request: dict) -> dict:
     helper = os.path.join(os.path.dirname(os.path.realpath(__file__)), "contact-delete")
     info = os.lstat(helper)
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
             or info.st_uid != os.getuid() or info.st_mode & 0o022):
         raise RuntimeError("Contacts deletion helper is unsafe")
-    payload = json.dumps({
-        "operation": "delete", "personUids": person_uids,
-    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(payload) > MAX_REPAIR_INPUT_BYTES:
         raise RuntimeError("Contacts deletion request is too large")
     code, stdout, stderr = run_bounded_process([helper], payload)
@@ -686,8 +681,32 @@ def run_contact_delete(person_uids: list[str]) -> dict:
     if code != 0 or not isinstance(response, dict) or response.get("ok") is not True:
         raise RuntimeError(clean_text(response.get("error") if isinstance(response, dict) else "", 180)
                            or "Contacts deletion failed")
+    return response
+
+
+def run_contact_delete(person_uids: list[str]) -> dict:
+    if (not 1 <= len(person_uids) <= 7 or len(set(person_uids)) != len(person_uids)
+            or any(not _PERSON_UID.fullmatch(uid) for uid in person_uids)):
+        raise RuntimeError("Contacts deletion card list is invalid")
+    response = run_native_contact_mutation({
+        "operation": "delete", "personUids": person_uids,
+    })
     if response.get("deletedCount") != len(person_uids):
         raise RuntimeError("Contacts did not confirm every source-card deletion")
+    return response
+
+
+def run_contact_consolidation(target_uid: str, source_uids: list[str], draft: dict) -> dict:
+    if (not _PERSON_UID.fullmatch(target_uid) or not 1 <= len(source_uids) <= 7
+            or len(set(source_uids)) != len(source_uids) or target_uid in source_uids
+            or any(not _PERSON_UID.fullmatch(uid) for uid in source_uids)):
+        raise RuntimeError("Contacts consolidation card list is invalid")
+    response = run_native_contact_mutation({
+        "operation": "consolidate", "targetUid": target_uid,
+        "sourceUids": source_uids, "card": validated_card_draft(draft),
+    })
+    if response.get("updated") is not True or response.get("deletedCount") != len(source_uids):
+        raise RuntimeError("Contacts did not confirm the card consolidation")
     return response
 
 
@@ -1049,7 +1068,11 @@ def apply_consolidation(
     )
     if preview["planHash"] != require_plan_hash(expected_plan):
         raise ValueError("the merge plan changed; preview it again")
-    undo_token = write_undo_receipt({"action": "consolidate", **private})
+    if private["targetBefore"]["note"] != private["targetAfter"]["note"]:
+        raise ValueError(
+            "contact notes cannot be changed during consolidation; keep the target note, "
+            "then edit it after the merge"
+        )
     result = run_contact_repair({
         "operation": "consolidate", "targetUid": private["targetUid"],
         "sourceUids": [source["personUid"] for source in private["sources"]],
@@ -1057,26 +1080,16 @@ def apply_consolidation(
             + [source["card"] for source in private["sources"]],
         "card": private["targetAfter"],
     })
-    if (result.get("updatedForConsolidation") is not True
+    if (result.get("readyToConsolidate") is not True
             or result.get("sourceCount") != len(private["sources"])):
-        raise RuntimeError("Contacts did not confirm the merged target update")
-    after = validated_card_detail(result.get("card"))
-    try:
-        run_contact_delete([source["personUid"] for source in private["sources"]])
-    except Exception as error:
-        try:
-            rollback = run_contact_repair({
-                "operation": "edit", "personUid": private["targetUid"],
-                "expectedCard": after, "card": card_draft(private["targetBefore"]),
-            })
-            if rollback.get("edited") is not True:
-                raise RuntimeError("Contacts did not confirm the target-card rollback")
-        except Exception as rollback_error:
-            raise RuntimeError(
-                "source-card deletion failed and the merged target could not be restored; "
-                "use the saved undo receipt before retrying"
-            ) from rollback_error
-        raise error
+        raise RuntimeError("Contacts did not confirm the consolidation preflight")
+    undo_token = write_undo_receipt({"action": "consolidate", **private})
+    run_contact_consolidation(
+        private["targetUid"],
+        [source["personUid"] for source in private["sources"]],
+        private["targetAfter"],
+    )
+    after = validated_card_detail(describe_records([{"uid": private["targetUid"]}])[0])
     return {
         **preview, "applied": True, "undoToken": undo_token,
         "revision": card_revision(after), "displayName": after["displayName"],
