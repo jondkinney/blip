@@ -51,7 +51,7 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Selecting a row below changes nothing");
     expect(identitySettings).toContain("Save “" + "\" + root.selectedCandidate.name");
     expect(identitySettings).toContain(" in Blip only");
-    expect(identitySettings).toContain("REVIEW OR REPAIR MAC CONTACTS · OPTIONAL");
+    expect(identitySettings).toContain("MAC CONTACTS · OPTIONAL");
     expect(identitySettings).toContain("Opening a card makes no change");
     expect(identitySettings).toContain("Check Mac Contacts again");
     expect(identitySettings).toContain("is already saved in Blip");
@@ -100,11 +100,13 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Compare & link ");
     expect(identitySettings).toContain("active Contacts cards…");
     expect(identitySettings).toContain("ContactCardCompare");
-    expect(contactCompare).toContain("COMPARE ACTIVE CARDS");
-    expect(contactCompare).toContain("COMBINED VIEW");
+    expect(contactCompare).toContain('title: "Compare"');
+    expect(contactCompare).toContain("DIFFERENCES ONLY");
+    expect(contactCompare).toContain("sharedRowMap");
+    expect(contactCompare).toContain("MERGED PREVIEW");
     expect(contactCompare).toContain("Prepare link in Contacts…");
     expect(contactCompare).toContain("CONFIRM AN UPSTREAM CONTACTS CHANGE");
-    expect(contactCompare).toContain("Nothing has changed");
+    expect(contactCompare).toContain("Checking makes no changes");
     expect(contactCompare).toContain("Open & edit on Mac…");
     expect(contactCompare).toContain("Text.PlainText");
     expect(contactCompare).not.toContain("Array.isArray(card.phones)");
