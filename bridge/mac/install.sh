@@ -6,6 +6,7 @@
 #   1. copies the bridge tools into ~/.blip/bin (imsg, imsg-send, imsg-read, contacts,
 #      tcc-check, blip-check) — read-only sqlite over chat.db, AppleScript
 #      send, Contacts — plus the static contact-repair.js Automation helper,
+#      the compiled contact-delete helper that uses Apple's current Contacts framework,
 #      the scoped contact-link.applescript UI handoff, and blip-dispatch, the forced-command gate that
 #      confines Blip's dedicated ssh key to exactly those tools;
 #   2. makes sure Remote Login (sshd) is on, since Blip talks over ssh;
@@ -25,6 +26,15 @@ for t in imsg imsg-send imsg-read contacts contact-repair.js contact-link.apples
     echo "install.sh: missing $here/$t" >&2; exit 1
   fi
 done
+
+if ! xcrun --find swiftc >/dev/null 2>&1; then
+  echo "install.sh: swiftc not found — install Xcode Command Line Tools" >&2
+  exit 1
+fi
+delete_tmp="$dest/.contact-delete.new"
+xcrun swiftc -O -framework Contacts "$here/contact-delete.swift" -o "$delete_tmp"
+chmod 0755 "$delete_tmp"
+mv -f "$delete_tmp" "$dest/contact-delete"
 echo "✓ bridge tools installed to $dest"
 
 # /usr/bin/python3 ALWAYS exists on macOS — as a Command Line Tools stub that
@@ -58,8 +68,8 @@ open those tools; contact writes additionally require both contact_writes=on
 on Linux and the owner-only ~/.blip/contact-writes-enabled gate on this Mac.
 
 Blip previews and revision-pins each card mutation. It writes an owner-only
-undo receipt before saving through Contacts.app and never writes Contacts'
-private SQLite databases directly.
+undo receipt before saving through Contacts.app and Apple's Contacts framework;
+it never writes Contacts' private SQLite databases directly.
 
 Linking or merging exact cards from Blip additionally uses System Events and
 requires sshd-keygen-wrapper under Privacy & Security → Accessibility. Blip

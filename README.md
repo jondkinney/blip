@@ -418,9 +418,10 @@ For duplicates, choose **Merge into card N…** to build an editable combined
 card. The selected card and its account remain authoritative; its scalar
 choices win, blanks are filled from the other cards, and unique collection
 values are combined. After a destructive confirmation, Blip updates that
-target and deletes the other exact source cards in one Contacts save. This is
-Blip's deterministic consolidation path and does not depend on Apple's menu
-item being enabled.
+target through Contacts.app and batches the other exact source-card deletions
+through Apple's current Contacts framework. If deletion fails, Blip restores
+the target from its pre-change snapshot. This deterministic path does not
+depend on Apple's menu item being enabled.
 
 From that comparison Blip can ask Contacts to select the exact cards and report
 Apple's currently enabled **Link Selected Cards** or **Merge Selected Cards**
@@ -436,8 +437,9 @@ card, show a destructive confirmation, remove only that verified phone/email
 through Contacts.app, and offer an immediate undo; its private receipt expires
 after seven days. Edits, deletions, consolidations, and narrow field removals
 all require `contact_writes=on` plus the
-separate owner-only Mac gate. Blip never writes the private Contacts SQLite
-database or deletes a possibly shared number without confirmation. Edit undo
+separate owner-only Mac gate. Whole-card deletion uses Apple's public Contacts
+framework. Blip never writes the private Contacts SQLite database or deletes a
+possibly shared number without confirmation. Edit undo
 restores the exact card fields if the card has not changed again. Delete and
 consolidation undo can recreate the text fields as new cards, but Contacts does
 not expose a supported way to restore their original synced-account placement,

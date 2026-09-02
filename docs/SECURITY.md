@@ -84,6 +84,10 @@ name. The settings resolver is a separate, explicit path with these limits:
   verifies the exact matching field set, refuses unrelated unsaved changes,
   and only then removes through its supported scripting API. One private,
   seven-day Mac-local receipt supports an immediate exact-field undo.
+- Whole-card deletion receives only the revalidated private card identifiers
+  over stdin and batches them with Apple's public `CNSaveRequest` API. The
+  compiled helper rejects oversized or malformed input, returns no identifiers,
+  and is not exposed by the dedicated SSH forced-command allowlist.
 - Native link/merge uses Contacts' exact current selection and one allowlisted,
   enabled menu action through Accessibility. Preview and execution are separate;
   execution pins the action text the user confirmed and aborts if it changes.
