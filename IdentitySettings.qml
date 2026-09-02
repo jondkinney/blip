@@ -19,6 +19,7 @@ ColumnLayout {
   property real cornerScale: 1.0
   property string selectedToken: ""
   property bool macReviewExpanded: false
+  property bool namingExpanded: false
   readonly property bool editorActive: customField.activeFocus
   readonly property bool reviewActive: resolver && resolver.activeHandle !== ""
   readonly property var savedChoices: resolver ? resolver.identities : []
@@ -93,6 +94,7 @@ ColumnLayout {
     var saved = choiceForHandle(handle)
     selectedToken = saved && saved.source === "contacts" ? saved.contactToken : ""
     customField.text = saved && saved.source === "custom" ? saved.name : ""
+    namingExpanded = !saved
     macReviewExpanded = false
     resolver.findCandidates(handle)
   }
@@ -101,6 +103,7 @@ ColumnLayout {
     if (resolver.dismissReview()) {
       selectedToken = ""
       customField.text = ""
+      namingExpanded = false
       macReviewExpanded = false
     }
   }
@@ -118,12 +121,17 @@ ColumnLayout {
       var saved = root.choiceForHandle(root.resolver.activeHandle)
       root.selectedToken = saved && saved.source === "contacts" ? saved.contactToken : ""
       customField.text = saved && saved.source === "custom" ? saved.name : ""
+      root.namingExpanded = !saved
+    }
+    function onIdentitiesChanged() {
+      if (root.choiceForHandle(root.resolver.activeHandle)) root.namingExpanded = false
     }
     function onCandidatesChanged() {
       var saved = root.activeChoice
       if (saved && saved.source === "contacts"
           && root.candidateForToken(saved.contactToken)) {
         root.selectedToken = saved.contactToken
+        root.namingExpanded = false
         return
       }
       if (root.selectedToken !== "" && !root.candidateForToken(root.selectedToken))
@@ -259,17 +267,17 @@ ColumnLayout {
   Rectangle {
     Layout.fillWidth: true
     visible: root.resolver && root.resolver.activeHandle !== ""
-    implicitHeight: guide.implicitHeight + root.space(24)
+    implicitHeight: guide.implicitHeight + root.space(32)
     radius: root.corner(root.space(12))
-    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.07)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.025)
     border.width: 1
-    border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
 
     ColumnLayout {
       id: guide
       anchors.fill: parent
-      anchors.margins: root.space(12)
-      spacing: root.space(10)
+      anchors.margins: root.space(16)
+      spacing: root.space(18)
 
       RowLayout {
         Layout.fillWidth: true
@@ -279,23 +287,114 @@ ColumnLayout {
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.closeReview()
         }
-        Text {
+        ColumnLayout {
           Layout.fillWidth: true
-          text: "Naming " + String(root.resolver ? root.resolver.activeHandle : "")
-          textFormat: Text.PlainText
-          elide: Text.ElideMiddle
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: root.fontSize(Style.font.body)
-          font.bold: true
+          spacing: root.space(2)
+          Text {
+            Layout.fillWidth: true
+            text: root.activeChoice ? root.activeChoice.name
+              : root.selectedCandidate ? root.selectedCandidate.name : "Name this conversation"
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.body)
+            font.bold: true
+          }
+          Text {
+            Layout.fillWidth: true
+            text: String(root.resolver ? root.resolver.activeHandle : "")
+            textFormat: Text.PlainText
+            elide: Text.ElideMiddle
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.caption)
+          }
         }
       }
 
-      SectionHeading { label: "1 · CHOOSE WHAT BLIP DISPLAYS" }
+      Rectangle {
+        Layout.fillWidth: true
+        visible: root.activeChoice !== null && (!root.namingExpanded
+          || (root.resolver && root.resolver.comparison !== null))
+        implicitHeight: savedNameSummary.implicitHeight + root.space(24)
+        radius: root.corner(root.space(10))
+        color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.08)
+        border.width: 1
+        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3)
+
+        RowLayout {
+          id: savedNameSummary
+          anchors.fill: parent
+          anchors.margins: root.space(12)
+          spacing: root.space(10)
+          Rectangle {
+            Layout.preferredWidth: root.space(26)
+            Layout.preferredHeight: root.space(26)
+            radius: width / 2
+            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+            Text {
+              anchors.centerIn: parent
+              text: "✓"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+              font.bold: true
+            }
+          }
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: root.space(2)
+            Text {
+              Layout.fillWidth: true
+              text: root.activeChoice ? root.activeChoice.name : ""
+              textFormat: Text.PlainText
+              elide: Text.ElideRight
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.bodySmall)
+              font.bold: true
+            }
+            Text {
+              Layout.fillWidth: true
+              text: "BLIP DISPLAY NAME · SAVED LOCALLY"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+              font.bold: true
+            }
+          }
+          SmallButton {
+            label: "Change…"
+            enabled: root.resolver && !root.resolver.loading
+            onClicked: root.namingExpanded = true
+          }
+        }
+      }
+
+      ColumnLayout {
+        Layout.fillWidth: true
+        visible: (root.namingExpanded || root.activeChoice === null)
+          && (!root.resolver || root.resolver.comparison === null)
+        spacing: root.space(10)
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: root.space(8)
+        SectionHeading { label: "BLIP DISPLAY NAME" }
+        SmallButton {
+          visible: root.activeChoice !== null
+          label: "Done"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: root.namingExpanded = false
+        }
+      }
 
       Text {
         Layout.fillWidth: true
-        text: "Selecting a row below changes nothing. After selecting the right person, use the separate save button to write only Blip’s portable identities.json file."
+        text: "Selecting a row below changes nothing. Save only when the displayed name is right."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -495,6 +594,8 @@ ColumnLayout {
         }
       }
 
+      }
+
       Rectangle {
         Layout.fillWidth: true
         implicitHeight: 1
@@ -504,7 +605,7 @@ ColumnLayout {
       RowLayout {
         Layout.fillWidth: true
         spacing: root.space(8)
-        SectionHeading { label: "2 · REVIEW OR REPAIR MAC CONTACTS · OPTIONAL" }
+        SectionHeading { label: "MAC CONTACTS · OPTIONAL" }
         SmallButton {
           label: root.macReviewExpanded ? "Hide Contacts tools" : "Review Contacts cards…"
           enabled: root.resolver && !root.resolver.loading
@@ -515,8 +616,10 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         text: root.resolver && root.resolver.candidates.length > 1
-          ? "The Blip name is handled above. Mac Contacts still has " + root.resolver.candidates.length + " names for this handle; compare or repair the source cards here."
-          : "Blip and Contacts agree. You can still compare duplicate active cards, complete their details, or link them through Contacts."
+          ? root.resolver.candidates.length + " people use this handle. Review the possible mismatch below."
+          : root.selectedCandidate && root.selectedCandidate.recordCount > 1
+            ? root.selectedCandidate.recordCount + " source cards found. Compare differences, complete missing details, then link if Contacts allows it."
+            : "Blip and Contacts agree. Open the source card only if its details need work."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -548,6 +651,8 @@ ColumnLayout {
           required property var modelData
           readonly property bool intended: root.selectedToken === modelData.token
           property bool cardsExpanded: !intended && modelData.recordCount <= 3
+          visible: !(intended && root.resolver && root.resolver.comparison
+            && root.resolver.comparison.ownerToken === modelData.token)
           Layout.fillWidth: true
           implicitHeight: sourceGroup.implicitHeight + root.space(16)
           radius: root.corner(root.space(9))
@@ -805,7 +910,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate !== null
-        text: "Opening a card makes no change. Use comparison to see the discovered fields locally, then open an exact card to finish details or prepare Apple’s own link/merge action. Handle removal is separately confirmed and saves an undo receipt."
+        text: "Opening a card makes no change. Handle removal asks for confirmation and saves an undo receipt."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
@@ -845,6 +950,7 @@ ColumnLayout {
 
   Text {
     Layout.fillWidth: true
+    visible: !root.reviewActive
     text: root.resolver ? root.resolver.configPath : "~/.config/blip/identities.json"
     textFormat: Text.PlainText
     wrapMode: Text.WrapAnywhere
