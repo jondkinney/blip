@@ -313,6 +313,10 @@ describe("QML safety invariants", () => {
     expect(contactCompare).toContain("DIFFERENCES ONLY");
     expect(contactCompare).toContain("sharedRowMap");
     expect(contactCompare).toContain("MERGED PREVIEW");
+    expect(contactCompare).toContain("function displayFieldLabel(fieldType, value)");
+    expect(contactCompare).toContain('detail.toLowerCase() === fieldType.toLowerCase()');
+    expect(contactCompare).toContain("displayFieldLabel(group.name, item.label)");
+    expect(contactCompare).toContain('displayFieldLabel("Address", address.label)');
     expect(contactCompare).toContain("Prepare link in Contacts…");
     expect(contactCompare).toContain("CONFIRM AN UPSTREAM CONTACTS CHANGE");
     expect(contactCompare).toContain("Checking makes no changes");

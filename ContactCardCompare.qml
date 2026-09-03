@@ -36,9 +36,15 @@ ColumnLayout {
   function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
   function corner(value) { return Math.max(0, Math.round(value * cornerScale)) }
   function cleanLabel(value) {
-    var label = String(value || "")
+    var label = String(value || "").trim()
     var apple = /^_\$!<(.+)>!\$_$/.exec(label)
     return apple ? apple[1] : label
+  }
+  function displayFieldLabel(fieldType, value) {
+    var detail = cleanLabel(value)
+    return detail === "" || detail.toLowerCase() === fieldType.toLowerCase()
+      ? fieldType
+      : fieldType + " · " + detail
   }
   function appendRow(rows, label, value) {
     var text = String(value || "").trim()
@@ -78,15 +84,13 @@ ColumnLayout {
       var group = groups[groupIndex]
       for (var valueIndex = 0; valueIndex < group.values.length; valueIndex++) {
         var item = group.values[valueIndex]
-        var itemLabel = cleanLabel(item.label)
-        appendRow(rows, group.name + (itemLabel === "" ? "" : " · " + itemLabel), item.value)
+        appendRow(rows, displayFieldLabel(group.name, item.label), item.value)
       }
     }
     var addresses = card.addresses || []
     for (var addressIndex = 0; addressIndex < addresses.length; addressIndex++) {
       var address = addresses[addressIndex]
-      var addressLabel = cleanLabel(address.label)
-      appendRow(rows, "Address" + (addressLabel === "" ? "" : " · " + addressLabel), addressText(address))
+      appendRow(rows, displayFieldLabel("Address", address.label), addressText(address))
     }
     appendRow(rows, "Notes", card.note)
     return rows
