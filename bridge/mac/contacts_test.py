@@ -39,6 +39,8 @@ class ContactResolverTests(unittest.TestCase):
         self.assertNotIn("removeRecord(", script_source)
         self.assertIn("CNSaveRequest()", native_source)
         self.assertIn("save.delete(mutable)", native_source)
+        self.assertIn("request.unifyResults = false", native_source)
+        self.assertIn("grouped[container, default: []]", native_source)
 
     def test_native_deletion_uses_fixed_argv_and_private_stdin(self):
         completed = (0, b'{"deletedCount":2,"ok":true}', b"")
@@ -562,7 +564,7 @@ class ContactResolverTests(unittest.TestCase):
                     contacts.card_draft(other),
                 )
 
-    def test_consolidation_preflights_then_atomically_updates_and_deletes(self):
+    def test_consolidation_preflights_then_updates_and_deletes(self):
         before = {
             "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
             "lastName": "Rivera", "nickname": "", "organization": "",

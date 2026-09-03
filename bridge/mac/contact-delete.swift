@@ -169,28 +169,45 @@ private let mutationKeys: [CNKeyDescriptor] = [
     CNContactPostalAddressesKey as CNKeyDescriptor
 ]
 
+private func exactContacts(_ identifiers: [String], in store: CNContactStore,
+                           keys: [CNKeyDescriptor]) throws -> [CNContact] {
+    let request = CNContactFetchRequest(keysToFetch: keys)
+    request.predicate = CNContact.predicateForContacts(withIdentifiers: identifiers)
+    request.unifyResults = false
+    var byIdentifier: [String: CNContact] = [:]
+    try store.enumerateContacts(with: request) { contact, _ in
+        guard identifiers.contains(contact.identifier), byIdentifier[contact.identifier] == nil else {
+            return
+        }
+        byIdentifier[contact.identifier] = contact
+    }
+    return identifiers.compactMap { byIdentifier[$0] }
+}
+
 private func exactContact(_ identifier: String, in store: CNContactStore,
                           keys: [CNKeyDescriptor]) throws -> CNContact {
-    let contact = try store.unifiedContact(withIdentifier: identifier, keysToFetch: keys)
-    guard contact.identifier == identifier else {
-        throw failure("Contacts returned a different card", code: 9)
+    let contacts = try exactContacts([identifier], in: store, keys: keys)
+    guard contacts.count == 1, contacts[0].identifier == identifier else {
+        throw failure("A selected Contacts source card no longer exists", code: 9)
     }
-    return contact
+    return contacts[0]
+}
+
+private func containerIdentifier(for contact: CNContact, in store: CNContactStore) throws -> String {
+    let predicate = CNContainer.predicateForContainerOfContact(withIdentifier: contact.identifier)
+    let containers = try store.containers(matching: predicate)
+    guard containers.count == 1 else {
+        throw failure("Contacts could not identify a selected card's account", code: 20)
+    }
+    return containers[0].identifier
 }
 
 private func requireMissing(_ identifiers: [String], in store: CNContactStore) throws {
-    for identifier in identifiers {
-        do {
-            _ = try exactContact(identifier, in: store,
-                                 keys: [CNContactIdentifierKey as CNKeyDescriptor])
-            throw failure("Contacts did not delete a selected source card", code: 19)
-        } catch let error as NSError {
-            if error.domain == CNErrorDomain
-                    && error.code == CNError.Code.recordDoesNotExist.rawValue {
-                continue
-            }
-            throw error
-        }
+    let remaining = try exactContacts(
+        identifiers, in: store, keys: [CNContactIdentifierKey as CNKeyDescriptor]
+    )
+    if !remaining.isEmpty {
+        throw failure("Contacts did not delete every selected source card", code: 19)
     }
 }
 
@@ -246,7 +263,13 @@ private func apply(_ card: Card, to contact: CNMutableContact) throws {
 }
 
 private func safeMessage(_ error: Error) -> String {
-    let raw = (error as NSError).localizedDescription
+    let nsError = error as NSError
+    let raw: String
+    if nsError.domain == NSCocoaErrorDomain && nsError.code == 134092 {
+        raw = "Contacts rejected a save that crossed contact accounts"
+    } else {
+        raw = nsError.localizedDescription
+    }
     let cleaned = raw.unicodeScalars.map { scalar -> Character in
         if CharacterSet.controlCharacters.contains(scalar) { return " " }
         return Character(String(scalar))
@@ -270,8 +293,11 @@ do {
             throw failure("Contacts mutation card list is missing", code: 13)
         }
         try validateIds(identifiers)
-        let contacts = try identifiers.map {
-            try exactContact($0, in: store, keys: [CNContactIdentifierKey as CNKeyDescriptor])
+        let contacts = try exactContacts(
+            identifiers, in: store, keys: [CNContactIdentifierKey as CNKeyDescriptor]
+        )
+        guard contacts.count == identifiers.count else {
+            throw failure("A selected Contacts source card no longer exists", code: 9)
         }
         if request.operation == "available" {
             emit(Response(ok: true, availableCount: contacts.count, deletedCount: nil,
@@ -309,15 +335,41 @@ do {
     let sources = try sourceUids.map {
         try exactContact($0, in: store, keys: [CNContactIdentifierKey as CNKeyDescriptor])
     }
-    let save = CNSaveRequest()
-    save.update(mutableTarget)
-    for source in sources {
-        guard let mutable = source.mutableCopy() as? CNMutableContact else {
-            throw failure("Contacts returned a read-only source card", code: 18)
+    let targetContainer = try containerIdentifier(for: target, in: store)
+    let sourceContainers = try sources.map { try containerIdentifier(for: $0, in: store) }
+    if sourceContainers.allSatisfy({ $0 == targetContainer }) {
+        let save = CNSaveRequest()
+        save.update(mutableTarget)
+        for source in sources {
+            guard let mutable = source.mutableCopy() as? CNMutableContact else {
+                throw failure("Contacts returned a read-only source card", code: 18)
+            }
+            save.delete(mutable)
         }
-        save.delete(mutable)
+        try store.execute(save)
+    } else {
+        // Contacts can reject a single CNSaveRequest that spans account-backed
+        // persistent stores. Save the complete survivor first so no source data
+        // is lost, then delete sources in one request per backing container.
+        let update = CNSaveRequest()
+        update.update(mutableTarget)
+        try store.execute(update)
+
+        var grouped: [String: [CNContact]] = [:]
+        for (source, container) in zip(sources, sourceContainers) {
+            grouped[container, default: []].append(source)
+        }
+        for contacts in grouped.values {
+            let deletion = CNSaveRequest()
+            for source in contacts {
+                guard let mutable = source.mutableCopy() as? CNMutableContact else {
+                    throw failure("Contacts returned a read-only source card", code: 18)
+                }
+                deletion.delete(mutable)
+            }
+            try store.execute(deletion)
+        }
     }
-    try store.execute(save)
     _ = try exactContact(targetUid, in: store,
                          keys: [CNContactIdentifierKey as CNKeyDescriptor])
     try requireMissing(sourceUids, in: store)

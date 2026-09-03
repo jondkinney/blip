@@ -327,9 +327,12 @@ For duplicates, choose **Merge into card N…** to build an editable combined
 card. The selected card and its account remain authoritative; its scalar
 choices win, blanks are filled from the other cards, and unique collection
 values are combined. After a destructive confirmation, Blip batches the target
-update and the other exact source-card deletions in one save through Apple's
-current Contacts framework. This deterministic path does not depend on Apple's
-menu item being enabled.
+update and same-account source-card deletions in one save through Apple's
+current Contacts framework. When source cards cross account stores, Blip first
+saves the complete surviving card and then deletes sources in account-scoped
+requests; this avoids Contacts' unsupported cross-store save while keeping the
+merged data safe before any source is removed. This deterministic path does not
+depend on Apple's menu item being enabled.
 
 From that comparison Blip can ask Contacts to select the exact cards and report
 Apple's currently enabled **Link Selected Cards** or **Merge Selected Cards**
