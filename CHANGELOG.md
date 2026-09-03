@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Match the Appearance preview bubbles to the live sender-corner treatment,
+  and add a portable 12/24-hour conversation-list time preference (AM/PM by
+  default).
+- Coalesce migrated named group-chat records when their title and exact
+  participant set agree. Pin state follows the one logical conversation, the
+  newest source remains the send target, and history/unread state spans every
+  retained source identifier.
+
+- Remove the sidebar's duplicate left inset in the app window so search,
+  pinned conversations, and the message list sit closer to the window edge
+  while retaining breathing room beside the conversation divider.
+- Match Messages' compact sidebar hierarchy by moving Settings into the Blip
+  header and removing redundant Messages/Pinned labels. Pinned direct and
+  group conversations now use short names from Contacts' unified-card view.
+- Replace Messages' raw attachment placeholder glyph in conversation previews
+  with Photo, Video, Audio message, Contact card, or Attachment.
+- Suppress a message body when it contains only the URL already represented by
+  an unfurled link card, including when its preview metadata canonicalizes away
+  tracking parameters. Captions and other accompanying text remain visible.
 - Make message links inherit the bubble's readable text color, render grouped
   bubble corners as one translucent shape without a darker overlap, and cap
   inline media in logical UI units on wide windows. Retina PNG density is now

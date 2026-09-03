@@ -13,6 +13,7 @@ import {
   dedupeSelfEcho,
   isGroupChat,
   displayName,
+  messagePreview,
   fetchMessages,
   loadAllowlist,
   loadState,
@@ -54,6 +55,16 @@ describe("buildThreads", () => {
     expect(threads[0]!.chat).toBe("A");          // newest thread first
     expect(threads[0]!.last_text).toBe("newer");
     expect(threads[0]!.count).toBe(2);
+  });
+
+  test("attachment previews never expose the object-replacement glyph", () => {
+    expect(messagePreview("\uFFFC", { name: "IMG_0042.HEIC", mime: "image/heic" })).toBe("Photo");
+    expect(messagePreview("\uFFFC", { name: "clip.mov", mime: "video/quicktime" })).toBe("Video");
+    expect(messagePreview("caption \uFFFC", { name: "clip.mov", mime: "video/quicktime" })).toBe("caption");
+    const threads = buildThreads([
+      msg({ text: "\uFFFC", attachments: [{ name: "IMG_1.png", mime: "image/png", bytes: 5 }] }),
+    ], "");
+    expect(threads[0]!.last_text).toBe("Photo");
   });
 
   test("orders threads newest-first regardless of input order", () => {
@@ -748,10 +759,47 @@ describe("complete conversation list (mergeChats)", () => {
     expect(out[0]!.pin_order).toBe(1);
   });
 
+  test("pinned rows receive Messages-style names and cleaned latest previews", () => {
+    const namedChats = chats.map((chat, index) => index === 0
+      ? { ...chat, pinned_name: "Pat", last_text: "Photo" }
+      : chat);
+    const matchingWindow = { ...windowThread, last_text: "\uFFFC" };
+    const out = mergeChats([matchingWindow], namedChats, {}, {});
+    expect(out[0]!.pin_name).toBe("Pat");
+    expect(out[0]!.last_text).toBe("Photo");
+  });
+
   test("DM rows are named from the contact, groups from the group cache", () => {
     const out = mergeChats([], chats, {}, {});
     expect(out.find((t) => t.chat === "+15559990000")!.name).toBe("Quiet Q");
     expect(out.find((t) => t.chat === "ce5a593a78af408282d61461ade89135")!.name).toBe("LMT");
+  });
+
+  test("migrated named groups combine alias history, unread counts, and pin state", () => {
+    const oldId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const newId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const source = [{
+      id: newId, aliases: [newId, oldId], name: "Partners", service: "iMessage",
+      last: "2026-09-02 19:29:00", last_text: "new side", last_from_me: false,
+      last_handle: "+15550000001", last_name: "Eric", pinned_order: 1,
+      pinned_name: "Partners",
+    }];
+    const rich = [
+      { ...windowThread, chat: oldId, name: "Partners", count: 5, unread: 2,
+        last_ts: "2026-09-01 09:00:00", last_text: "old side" },
+      { ...windowThread, chat: newId, name: "Partners", count: 3, unread: 1,
+        last_ts: "2026-09-02 19:29:00", last_text: "new side" },
+    ];
+    const out = mergeChats(rich, source, {
+      [newId]: { name: "Partners", guid: `any;+;${newId}`, participants: ["+1", "+2"] },
+    }, {});
+    expect(out).toHaveLength(1);
+    expect(out[0]!.chat).toBe(newId);
+    expect(out[0]!.aliases).toEqual([newId, oldId]);
+    expect(out[0]!.count).toBe(8);
+    expect(out[0]!.unread).toBe(3);
+    expect(out[0]!.pinned).toBe(true);
+    expect(out[0]!.guid).toBe(`any;+;${newId}`);
   });
 });
 

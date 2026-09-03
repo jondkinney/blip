@@ -261,13 +261,15 @@ symlinks and non-regular files.
   "sidebarWidth": 320,
   "avatarSize": 30,
   "cornerScale": 1,
-  "hideShortCodeConversations": true
+  "hideShortCodeConversations": true,
+  "use12HourConversationTimes": true
 }
 ```
 
 Bubble colors accept `"theme"`, `#rrggbb`, or `#rrggbbaa`. The GUI exposes
 every field: app-window opacity, font scale, density, sidebar width, avatar
-size, and corner roundness. Writes are atomic and owner-only; malformed,
+size, corner roundness, short-code visibility, and 12/24-hour conversation-list
+times. Writes are atomic and owner-only; malformed,
 oversized, symlinked, or out-of-range files are rejected with an error in the
 settings view instead of being loaded into the long-lived shell.
 

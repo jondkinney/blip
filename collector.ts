@@ -93,6 +93,8 @@ export interface LinkCard { url: string; title: string; summary: string; image_i
 
 export interface Thread {
   chat: string;
+  /** Historical chat identifiers coalesced into this logical conversation. */
+  aliases?: string[];
   /** Full AppleScript chat GUID for groups (""), empty for DMs. Sending to a
    *  group means `imsg-send --chat-id <guid>`; never the bare id. */
   guid: string;
@@ -107,6 +109,8 @@ export interface Thread {
   /** Messages.app pin state. Order is sourced read-only from the Mac plist. */
   pinned?: boolean;
   pin_order?: number;
+  /** Messages-style short label from Contacts' unified-card view. */
+  pin_name?: string;
 }
 
 export interface Toast {
@@ -245,6 +249,23 @@ export function loadAllowlist(path = ALLOWLIST_PATH): string[] {
 export function displayName(msgs: ImsgMessage[]): string {
   for (const m of msgs) if (m.name) return m.name;
   return chatKey(msgs[0]);
+}
+
+/** Never expose Messages' U+FFFC attachment marker as a dotted OBJ glyph. */
+export function messagePreview(
+  text: unknown,
+  attachment?: { name?: unknown; mime?: unknown } | null,
+): string {
+  const cleaned = String(text ?? "").replace(/\uFFFC/g, "").trim();
+  if (cleaned) return cleaned;
+  if (!attachment) return "";
+  const mime = String(attachment.mime ?? "").toLowerCase();
+  const name = String(attachment.name ?? "").toLowerCase();
+  if (mime.startsWith("image/") || /\.(?:avif|gif|heic|heif|jpe?g|png|webp)$/.test(name)) return "Photo";
+  if (mime.startsWith("video/") || /\.(?:m4v|mov|mp4|webm)$/.test(name)) return "Video";
+  if (mime.startsWith("audio/") || /\.(?:aac|m4a|mp3|wav)$/.test(name)) return "Audio message";
+  if (mime === "text/vcard" || /\.vcf$/.test(name)) return "Contact card";
+  return "Attachment";
 }
 
 /** Apply a user's explicit resolution before any list, toast, or group label is built. */
@@ -413,7 +434,7 @@ export function buildThreads(
       handle: String(last.handle || chat),
       service: last.service,
       last_ts: last.ts,
-      last_text: last.text,
+      last_text: messagePreview(last.text, last.attachments?.[0]),
       last_from_me: last.from_me,
       count: sorted.length,
       unread,
@@ -664,6 +685,7 @@ export function unreadOldest(
 /** One row of `imsg --json chats`: a conversation with its latest preview. */
 export interface ChatInfo {
   id: string;
+  aliases?: string[];
   name: string | null;
   service: string;
   last: string;
@@ -671,8 +693,10 @@ export interface ChatInfo {
   last_from_me: boolean;
   last_handle: string;
   last_name: string | null;
+  last_attachment?: { name: string; mime: string } | null;
   /** Ordered position from com.apple.messages.pinning.plist, null if unpinned. */
   pinned_order: number | null;
+  pinned_name?: string | null;
 }
 
 /** How many conversations the sidebar lists (chat.db has hundreds). */
@@ -695,20 +719,43 @@ export function fetchChats(runner = spawnSync): ChatInfo[] | null {
     const rows = JSON.parse(res.stdout as string);
     if (!Array.isArray(rows)) return null;
     return rows
-      .filter((r) => r && typeof r.id === "string" && r.id !== "")
-      .map((r) => ({
-        id: String(r.id),
-        name: typeof r.name === "string" ? r.name : null,
-        service: String(r.service ?? ""),
-        last: String(r.last ?? ""),
-        last_text: String(r.last_text ?? ""),
-        last_from_me: r.last_from_me === true,
-        last_handle: String(r.last_handle ?? ""),
-        last_name: typeof r.last_name === "string" ? r.last_name : null,
-        pinned_order: Number.isInteger(r.pinned_order) && r.pinned_order >= 0 && r.pinned_order < 16
-          ? Number(r.pinned_order)
-          : null,
-      }));
+      .filter((r) => r && typeof r.id === "string" && r.id.length > 0 && r.id.length <= 512 &&
+        !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(r.id))
+      .map((r) => {
+        const id = String(r.id);
+        const aliases = [...new Set([
+          id,
+          ...(Array.isArray(r.aliases) ? r.aliases : []),
+        ].filter((value): value is string =>
+          typeof value === "string" && value.length > 0 && value.length <= 512 &&
+          !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(value),
+        ))].slice(0, 16);
+        return {
+          id,
+          aliases,
+          name: typeof r.name === "string" ? r.name : null,
+          service: String(r.service ?? ""),
+          last: String(r.last ?? ""),
+          last_text: messagePreview(
+            r.last_text,
+            r.last_attachment && typeof r.last_attachment === "object"
+              ? { name: r.last_attachment.name, mime: r.last_attachment.mime }
+              : null,
+          ),
+          last_from_me: r.last_from_me === true,
+          last_handle: String(r.last_handle ?? ""),
+          last_name: typeof r.last_name === "string" ? r.last_name : null,
+          last_attachment: r.last_attachment && typeof r.last_attachment === "object"
+            ? { name: String(r.last_attachment.name ?? ""), mime: String(r.last_attachment.mime ?? "") }
+            : null,
+          pinned_order: Number.isInteger(r.pinned_order) && r.pinned_order >= 0 && r.pinned_order < 16
+            ? Number(r.pinned_order)
+            : null,
+          pinned_name: typeof r.pinned_name === "string" && r.pinned_name.trim() !== ""
+            ? r.pinned_name.trim().slice(0, 160)
+            : null,
+        };
+      });
   } catch {
     return null;
   }
@@ -726,27 +773,78 @@ export function mergeChats(
   groups: Record<string, GroupInfo>,
   unreadCounts: Record<string, number>,
 ): Thread[] {
-  const pinOrder = new Map<string, number>();
+  const chatById = new Map<string, ChatInfo>();
+  const canonicalFor = new Map<string, string>();
   for (const chat of chats) {
-    if (chat.pinned_order === null) continue;
-    const previous = pinOrder.get(chat.id);
-    if (previous === undefined || chat.pinned_order < previous) pinOrder.set(chat.id, chat.pinned_order);
+    if (!chatById.has(chat.id)) chatById.set(chat.id, chat);
+    for (const alias of chat.aliases ?? [chat.id])
+      if (!canonicalFor.has(alias)) canonicalFor.set(alias, chat.id);
   }
-  const have = new Set(threads.map((t) => t.chat));
-  const out = threads.map((thread) => {
-    const order = pinOrder.get(thread.chat);
-    return order === undefined ? thread : { ...thread, pinned: true, pin_order: order };
-  });
+
+  // Fold the rich recent-message rows before completing the list. A migrated
+  // group can have activity and unread counts under more than one source chat
+  // id; the newest source id remains canonical for sending.
+  const buckets = new Map<string, Thread>();
+  for (const thread of threads) {
+    const canonical = canonicalFor.get(thread.chat) ?? thread.chat;
+    const chat = chatById.get(canonical);
+    const aliases = chat?.aliases ?? [canonical];
+    const existing = buckets.get(canonical);
+    if (!existing) {
+      buckets.set(canonical, { ...thread, chat: canonical, aliases, count: thread.count, unread: thread.unread });
+      continue;
+    }
+    const newest = thread.last_ts > existing.last_ts ? thread : existing;
+    buckets.set(canonical, {
+      ...newest,
+      chat: canonical,
+      aliases,
+      count: existing.count + thread.count,
+      unread: existing.unread + thread.unread,
+    });
+  }
+
+  const have = new Set(buckets.keys());
+  const out: Thread[] = [];
+  for (const [canonical, bucket] of buckets) {
+    const chat = chatById.get(canonical);
+    if (!chat) {
+      out.push({ ...bucket, last_text: messagePreview(bucket.last_text) });
+      continue;
+    }
+    const group = isGroupChat(canonical);
+    const groupInfo = groups[canonical]
+      ?? (chat.aliases ?? [chat.id]).map((alias) => groups[alias]).find((value) => value !== undefined);
+    const name = group
+      ? (groupInfo?.name || chat.name || bucket.name || canonical)
+      : (chat.last_name || chat.name || bucket.name || canonical);
+    out.push({
+      ...bucket,
+      aliases: chat.aliases ?? [chat.id],
+      guid: group ? groupInfo?.guid ?? bucket.guid : "",
+      name,
+      service: chat.service || bucket.service,
+      last_text: chat.last === bucket.last_ts ? chat.last_text : messagePreview(bucket.last_text),
+      ...(chat.pinned_order !== null ? {
+        pinned: true,
+        pin_order: chat.pinned_order,
+        ...(chat.pinned_name ? { pin_name: chat.pinned_name } : {}),
+      } : {}),
+    });
+  }
   for (const c of chats) {
     if (have.has(c.id)) continue;
     have.add(c.id);
     const group = isGroupChat(c.id);
+    const groupInfo = groups[c.id]
+      ?? (c.aliases ?? [c.id]).map((alias) => groups[alias]).find((value) => value !== undefined);
     const name = group
-      ? (groups[c.id]?.name || c.name || c.id)
+      ? (groupInfo?.name || c.name || c.id)
       : (c.last_name || c.name || c.id);
     out.push({
       chat: c.id,
-      guid: group ? groups[c.id]?.guid ?? "" : "",
+      aliases: c.aliases ?? [c.id],
+      guid: group ? groupInfo?.guid ?? "" : "",
       name,
       handle: group ? c.last_handle || c.id : c.id,
       service: c.service,
@@ -754,8 +852,12 @@ export function mergeChats(
       last_text: c.last_text,
       last_from_me: c.last_from_me,
       count: 0,
-      unread: unreadCounts[c.id] ?? 0,
-      ...(pinOrder.has(c.id) ? { pinned: true, pin_order: pinOrder.get(c.id)! } : {}),
+      unread: (c.aliases ?? [c.id]).reduce((sum, alias) => sum + (unreadCounts[alias] ?? 0), 0),
+      ...(c.pinned_order !== null ? {
+        pinned: true,
+        pin_order: c.pinned_order,
+        ...(c.pinned_name ? { pin_name: c.pinned_name } : {}),
+      } : {}),
     });
   }
   return out.sort((a, b) => (a.last_ts < b.last_ts ? 1 : a.last_ts > b.last_ts ? -1 : 0));
@@ -786,7 +888,13 @@ export function fetchGroups(runner = spawnSync): Record<string, GroupInfo> | nul
 
 // ---------------------------------------------------------------- main
 
-export function collect(deep: boolean, markRead = false, readChat = "", seenTs = ""): BlipOutput {
+export function collect(
+  deep: boolean,
+  markRead = false,
+  readChat = "",
+  seenTs = "",
+  readAliases: string[] = [],
+): BlipOutput {
   const now = new Date().toISOString();
   const state = loadState();
   // On migration, seed the ledger all the way back to what the user last read.
@@ -842,14 +950,20 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
       if (ts > readMark) readMarks[c] = ts;
     }
   }
+  const readTargets = [...new Set([readChat, ...readAliases])]
+    .filter((chat) => chat !== "" && chat.length <= 512 &&
+      !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(chat))
+    .slice(0, 16);
   if (readChat) {
     // Mark through what the user actually SAW (the panel passes the newest
     // bubble ts as --seen; it includes a future-dated row when the chat has
     // one on screen). A message arriving between the click and this run has
     // ts > seen and stays unread. Fallback without --seen: through now, or
     // the chat's own future row.
-    const own = chatMax[readChat] ?? "";
-    readMarks[readChat] = seenTs !== "" ? seenTs : (own > nowTs ? own : nowTs);
+    for (const target of readTargets) {
+      const own = chatMax[target] ?? "";
+      readMarks[target] = seenTs !== "" ? seenTs : (own > nowTs ? own : nowTs);
+    }
   }
   // Group metadata is ~1000 rows; refresh it only on a deep (panel) fetch and
   // keep the last good copy if the lookup fails.
@@ -862,8 +976,10 @@ export function collect(deep: boolean, markRead = false, readChat = "", seenTs =
     exactCounts = {};
     exactOldest = {};
   } else if (readChat) {
-    delete exactCounts[readChat];
-    delete exactOldest[readChat];
+    for (const target of readTargets) {
+      delete exactCounts[target];
+      delete exactOldest[target];
+    }
   }
   // Prune per-thread marks the global mark has overtaken (Codex finding #13):
   // they no longer affect any count and would otherwise accumulate forever.
@@ -921,10 +1037,14 @@ if (import.meta.main) {
   const markRead = process.argv.includes("--mark-read");
   const ri = process.argv.indexOf("--read");
   const readChat = ri >= 0 ? String(process.argv[ri + 1] ?? "") : "";
+  const readAliases: string[] = [];
+  for (let i = 0; i < process.argv.length; i++) {
+    if (process.argv[i] === "--read-alias") readAliases.push(String(process.argv[i + 1] ?? ""));
+  }
   const si = process.argv.indexOf("--seen");
   const seenTs = si >= 0 ? String(process.argv[si + 1] ?? "") : "";
   try {
-    console.log(JSON.stringify(collect(deep, markRead, readChat, seenTs)));
+    console.log(JSON.stringify(collect(deep, markRead, readChat, seenTs, readAliases)));
   } catch (e) {
     console.log(
       JSON.stringify({

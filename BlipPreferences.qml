@@ -25,6 +25,7 @@ Item {
   property int avatarSize: 30
   property real cornerScale: 1.0
   property bool hideShortCodeConversations: true
+  property bool use12HourConversationTimes: true
 
   property bool loaded: false
   property bool exists: false
@@ -45,7 +46,8 @@ Item {
       sidebarWidth: 320,
       avatarSize: 30,
       cornerScale: 1.0,
-      hideShortCodeConversations: true
+      hideShortCodeConversations: true,
+      use12HourConversationTimes: true
     }
   }
 
@@ -60,7 +62,8 @@ Item {
       sidebarWidth: Math.round(sidebarWidth),
       avatarSize: Math.round(avatarSize),
       cornerScale: Math.round(cornerScale * 100) / 100,
-      hideShortCodeConversations: hideShortCodeConversations
+      hideShortCodeConversations: hideShortCodeConversations,
+      use12HourConversationTimes: use12HourConversationTimes
     }
   }
 
@@ -86,6 +89,7 @@ Item {
     if (!finiteIn(value.avatarSize, 24, 64)) return false
     if (!finiteIn(value.cornerScale, 0, 2)) return false
     if (typeof value.hideShortCodeConversations !== "boolean") return false
+    if (typeof value.use12HourConversationTimes !== "boolean") return false
 
     var normalized = {
       schemaVersion: 1,
@@ -97,7 +101,8 @@ Item {
       sidebarWidth: Math.round(value.sidebarWidth),
       avatarSize: Math.round(value.avatarSize),
       cornerScale: Math.round(value.cornerScale * 100) / 100,
-      hideShortCodeConversations: value.hideShortCodeConversations
+      hideShortCodeConversations: value.hideShortCodeConversations,
+      use12HourConversationTimes: value.use12HourConversationTimes
     }
     var serialized = JSON.stringify(normalized)
     // Keep bindings and slider delegates untouched when the periodic bounded
@@ -112,6 +117,7 @@ Item {
     avatarSize = normalized.avatarSize
     cornerScale = normalized.cornerScale
     hideShortCodeConversations = normalized.hideShortCodeConversations
+    use12HourConversationTimes = normalized.use12HourConversationTimes
     lastSerialized = serialized
     return true
   }
@@ -206,8 +212,10 @@ Item {
   }
 
   function setBoolean(key, value) {
-    if (key !== "hideShortCodeConversations" || typeof value !== "boolean") return false
-    hideShortCodeConversations = value
+    if (typeof value !== "boolean") return false
+    if (key === "hideShortCodeConversations") hideShortCodeConversations = value
+    else if (key === "use12HourConversationTimes") use12HourConversationTimes = value
+    else return false
     scheduleSave()
     return true
   }

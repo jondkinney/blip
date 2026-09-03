@@ -45,6 +45,7 @@ describe("QML safety invariants", () => {
     expect(panel).toContain('text-decoration: underline;');
     expect(panel).toContain("fillColor: bubble.color");
     expect(panel).toContain("modelData.groupEnd === true && !bubbleRow.mine");
+    expect(panel).toContain("modelData.linkOnly !== true");
     expect(panel).not.toContain("color: bubble.color\n                      anchors.bottom");
   });
 
@@ -54,11 +55,39 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("metrics[id] = { pixelRatio: ratio, pixelWidth: pixelWidth, pixelHeight: pixelHeight }");
   });
 
+  test("the app sidebar does not duplicate the window's outer left inset", () => {
+    expect(panel).toContain("anchors.leftMargin: root.splitView ? root.space(6) : 0");
+    expect(panel).toContain("retain the larger right gutter beside the pane divider");
+  });
+
+  test("the sidebar header is compact and pinned labels use Messages names", () => {
+    expect(panel).toContain('tooltipText: "Settings"');
+    expect(panel).toContain("thread.pin_name || thread.name || thread.chat");
+    expect(panel).not.toContain('text: "PINNED"');
+    expect(panel).not.toContain('? "SEARCH" : "MESSAGES"');
+  });
+
+  test("appearance previews real bubble corners and offers portable list time formatting", () => {
+    expect(settings).toContain("component PreviewBubble: Item");
+    expect(settings).toContain("previewBubble.mine ? previewBubble.height");
+    expect(settings).toContain('label: "12-hour (AM/PM)"');
+    expect(settings).toContain('setBoolean("use12HourConversationTimes", true)');
+    expect(panel).toContain("preferences.use12HourConversationTimes");
+  });
+
+  test("coalesced chat aliases load one history and clear one logical unread state", () => {
+    expect(panel).toContain("property var threadRunningAliases: []");
+    expect(panel).toContain('.concat(threadRunningAliases)');
+    expect(panel).toContain("threadContainsChat(threads[i], hit.chat)");
+    expect(widget).toContain('args.push("--read-alias", req.readAliases[i])');
+    expect(widget).toContain("root.activeReadAliases()");
+  });
+
   test("read marks are queued and only applied after a successful load", () => {
     expect(widget).toContain("property var refreshQueue: []");
     expect(widget).not.toContain("property var queued: null");
     const success = panel.indexOf("if (d.ok === true)");
-    const mark = panel.indexOf("markThreadRead(root.threadRunningChat)");
+    const mark = panel.indexOf("markThreadRead(root.threadRunningChat,");
     expect(success).toBeGreaterThan(-1);
     expect(mark).toBeGreaterThan(success);
   });

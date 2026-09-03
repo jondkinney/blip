@@ -5,6 +5,7 @@ import Foundation
 private let maxInputBytes = 48 * 1024
 private let maxPersonIds = 7
 private let maxValues = 16
+private let maxNameHandles = 128
 private let allowedId = try! NSRegularExpression(pattern: "^[A-Za-z0-9._:-]{1,200}$")
 private let forbiddenDirectionals = Set<UInt32>(
     Array(0x202A...0x202E) + Array(0x2066...0x2069)
@@ -47,6 +48,13 @@ private struct Request: Decodable {
     let targetUid: String?
     let sourceUids: [String]?
     let card: Card?
+    let handles: [String]?
+}
+
+private struct ResolvedName: Encodable {
+    let handle: String
+    let name: String
+    let shortName: String
 }
 
 private struct Response: Encodable {
@@ -55,6 +63,7 @@ private struct Response: Encodable {
     let deletedCount: Int?
     let updated: Bool?
     let error: String?
+    let names: [ResolvedName]?
 }
 
 private func failure(_ message: String, code: Int) -> NSError {
@@ -107,6 +116,55 @@ private func validateText(_ value: String, maximum: Int, required: Bool = false)
           }) else {
         throw failure("Contacts mutation contains an invalid field", code: 4)
     }
+}
+
+private func resolvedNames(_ handles: [String], in store: CNContactStore) throws -> [ResolvedName] {
+    guard !handles.isEmpty, handles.count <= maxNameHandles,
+          Set(handles).count == handles.count else {
+        throw failure("Contacts name request is invalid", code: 21)
+    }
+    let keys: [CNKeyDescriptor] = [
+        CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+        CNContactNicknameKey as CNKeyDescriptor,
+        CNContactOrganizationNameKey as CNKeyDescriptor,
+        CNContactPhoneNumbersKey as CNKeyDescriptor,
+        CNContactEmailAddressesKey as CNKeyDescriptor,
+    ]
+    func normalized(_ value: String) -> String {
+        if value.contains("@") { return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        let digits = value.filter(\.isNumber)
+        return digits.count >= 10 ? String(digits.suffix(10)) : digits
+    }
+    var wanted: [String: String] = [:]
+    for handle in handles where wanted[normalized(handle)] == nil {
+        wanted[normalized(handle)] = handle
+    }
+    var found: [String: ResolvedName] = [:]
+    let request = CNContactFetchRequest(keysToFetch: keys)
+    request.unifyResults = true
+    try store.enumerateContacts(with: request) { contact, _ in
+        let keys = contact.phoneNumbers.map { normalized($0.value.stringValue) }
+            + contact.emailAddresses.map { normalized($0.value as String) }
+        let hits = Set(keys).intersection(wanted.keys)
+        if hits.isEmpty { return }
+        let formatted = CNContactFormatter.string(from: contact, style: .fullName) ?? ""
+        let full = !formatted.isEmpty ? formatted
+            : (!contact.organizationName.isEmpty ? contact.organizationName : contact.nickname)
+        if full.isEmpty { return }
+        let short = !contact.givenName.isEmpty ? contact.givenName
+            : (!contact.nickname.isEmpty ? contact.nickname : full)
+        for key in hits where found[key] == nil {
+            found[key] = ResolvedName(handle: wanted[key]!, name: full, shortName: short)
+        }
+    }
+    var result: [ResolvedName] = []
+    for handle in handles {
+        try validateText(handle, maximum: 320, required: true)
+        if let name = found[normalized(handle)] {
+            result.append(ResolvedName(handle: handle, name: name.name, shortName: name.shortName))
+        }
+    }
+    return result
 }
 
 private func validateLabeled(_ values: [LabeledValue]) throws {
@@ -280,13 +338,23 @@ private func safeMessage(_ error: Error) -> String {
 
 do {
     let request = try JSONDecoder().decode(Request.self, from: boundedInput())
-    guard ["available", "delete", "consolidate"].contains(request.operation) else {
+    guard ["available", "delete", "consolidate", "names"].contains(request.operation) else {
         throw failure("Contacts mutation operation is invalid", code: 11)
     }
     guard CNContactStore.authorizationStatus(for: .contacts) == .authorized else {
         throw failure("Contacts access is not authorized on the Mac", code: 12)
     }
     let store = CNContactStore()
+
+    if request.operation == "names" {
+        guard let handles = request.handles else {
+            throw failure("Contacts name request is missing", code: 22)
+        }
+        emit(Response(ok: true, availableCount: nil, deletedCount: nil,
+                      updated: nil, error: nil,
+                      names: try resolvedNames(handles, in: store)))
+        exit(0)
+    }
 
     if request.operation == "available" || request.operation == "delete" {
         guard let identifiers = request.personUids else {
@@ -301,7 +369,7 @@ do {
         }
         if request.operation == "available" {
             emit(Response(ok: true, availableCount: contacts.count, deletedCount: nil,
-                          updated: nil, error: nil))
+                          updated: nil, error: nil, names: nil))
             exit(0)
         }
         let save = CNSaveRequest()
@@ -314,7 +382,7 @@ do {
         try store.execute(save)
         try requireMissing(identifiers, in: store)
         emit(Response(ok: true, availableCount: nil, deletedCount: contacts.count,
-                      updated: nil, error: nil))
+                      updated: nil, error: nil, names: nil))
         exit(0)
     }
 
@@ -374,9 +442,9 @@ do {
                          keys: [CNContactIdentifierKey as CNKeyDescriptor])
     try requireMissing(sourceUids, in: store)
     emit(Response(ok: true, availableCount: nil, deletedCount: sources.count,
-                  updated: true, error: nil))
+                  updated: true, error: nil, names: nil))
 } catch {
     emit(Response(ok: false, availableCount: nil, deletedCount: nil,
-                  updated: nil, error: safeMessage(error)))
+                  updated: nil, error: safeMessage(error), names: nil))
     exit(1)
 }

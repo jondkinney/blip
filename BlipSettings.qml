@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as QQC
 import QtQuick.Layouts
+import QtQuick.Shapes
 import qs.Commons
 import qs.Ui
 
@@ -202,38 +203,20 @@ FocusScope {
           RowLayout {
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
-            Rectangle {
-              Layout.preferredWidth: Math.ceil(previewMine.implicitWidth) + root.space(22)
-              Layout.preferredHeight: Math.ceil(previewMine.implicitHeight) + root.space(14)
-              radius: root.corner(root.space(16))
-              color: root.outgoingFill
-              Text {
-                id: previewMine
-                anchors.centerIn: parent
-                text: "Your bubble"
-                textFormat: Text.PlainText
-                color: root.outgoingText
-                font.family: root.fontFamily
-                font.pixelSize: root.fontSize(Style.font.bodySmall)
-              }
+            PreviewBubble {
+              mine: true
+              label: "Your bubble"
+              fillColor: root.outgoingFill
+              textColor: root.outgoingText
             }
           }
           RowLayout {
             Layout.fillWidth: true
-            Rectangle {
-              Layout.preferredWidth: Math.ceil(previewTheirs.implicitWidth) + root.space(22)
-              Layout.preferredHeight: Math.ceil(previewTheirs.implicitHeight) + root.space(14)
-              radius: root.corner(root.space(16))
-              color: root.incomingFill
-              Text {
-                id: previewTheirs
-                anchors.centerIn: parent
-                text: "Their bubble"
-                textFormat: Text.PlainText
-                color: root.incomingText
-                font.family: root.fontFamily
-                font.pixelSize: root.fontSize(Style.font.bodySmall)
-              }
+            PreviewBubble {
+              mine: false
+              label: "Their bubble"
+              fillColor: root.incomingFill
+              textColor: root.incomingText
             }
             Item { Layout.fillWidth: true }
           }
@@ -271,6 +254,34 @@ FocusScope {
           foreground: root.foreground
           fontFamily: root.fontFamily
           fontSize: root.fontSize(Style.font.caption)
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: root.space(5)
+          Text {
+            text: "Conversation list time"
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.fontSize(Style.font.bodySmall)
+            font.bold: true
+          }
+          RowLayout {
+            spacing: root.space(7)
+            ActionButton {
+              label: "12-hour (AM/PM)"
+              selected: !root.preferences || root.preferences.use12HourConversationTimes
+              onClicked: if (root.preferences)
+                root.preferences.setBoolean("use12HourConversationTimes", true)
+            }
+            ActionButton {
+              label: "24-hour"
+              selected: root.preferences && !root.preferences.use12HourConversationTimes
+              onClicked: if (root.preferences)
+                root.preferences.setBoolean("use12HourConversationTimes", false)
+            }
+          }
         }
 
         PreferenceSlider {
@@ -369,6 +380,67 @@ FocusScope {
         Item { Layout.preferredHeight: root.space(6) }
         }
       }
+    }
+  }
+
+  component PreviewBubble: Item {
+    id: previewBubble
+    property bool mine: false
+    property string label: ""
+    property color fillColor: root.incomingFill
+    property color textColor: root.incomingText
+
+    Layout.preferredWidth: Math.ceil(previewLabel.implicitWidth) + root.space(22)
+    Layout.preferredHeight: Math.ceil(previewLabel.implicitHeight) + root.space(14)
+
+    Shape {
+      anchors.fill: parent
+      antialiasing: true
+      ShapePath {
+        id: previewPath
+        readonly property real r: Math.min(
+          root.corner(root.space(16)), previewBubble.width / 2, previewBubble.height / 2
+        )
+        strokeColor: "transparent"
+        fillColor: previewBubble.fillColor
+        startX: r
+        startY: 0
+        PathLine { x: previewBubble.width - previewPath.r; y: 0 }
+        PathQuad {
+          x: previewBubble.width; y: previewPath.r
+          controlX: previewBubble.width; controlY: 0
+        }
+        PathLine {
+          x: previewBubble.width
+          y: previewBubble.mine ? previewBubble.height : previewBubble.height - previewPath.r
+        }
+        PathQuad {
+          x: previewBubble.mine ? previewBubble.width : previewBubble.width - previewPath.r
+          y: previewBubble.height
+          controlX: previewBubble.width; controlY: previewBubble.height
+        }
+        PathLine { x: previewBubble.mine ? previewPath.r : 0; y: previewBubble.height }
+        PathQuad {
+          x: 0
+          y: previewBubble.mine ? previewBubble.height - previewPath.r : previewBubble.height
+          controlX: 0; controlY: previewBubble.height
+        }
+        PathLine { x: 0; y: previewPath.r }
+        PathQuad {
+          x: previewPath.r; y: 0
+          controlX: 0; controlY: 0
+        }
+      }
+    }
+
+    Text {
+      id: previewLabel
+      anchors.centerIn: parent
+      text: previewBubble.label
+      textFormat: Text.PlainText
+      color: previewBubble.textColor
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.bodySmall)
     }
   }
 

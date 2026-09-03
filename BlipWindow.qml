@@ -36,7 +36,7 @@ FloatingWindow {
   readonly property bool loading: view.loading
   readonly property string activeLastTs: view.activeLastTs
   function openThread(t) { view.openThread(t) }
-  function openSettings() { view.openSettings() }
+  function openSettings(page) { view.openSettings(page) }
   function pushReload() { view.pushReload() }
 
   // ---- persistence: the window lives inside the shell process, so every
