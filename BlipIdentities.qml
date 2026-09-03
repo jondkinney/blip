@@ -47,8 +47,10 @@ Item {
   property int pendingAuditCount: 0
   property string pendingAuditFingerprint: ""
   property string auditFingerprint: ""
+  property bool vcardReported: false
 
   signal choicesChanged()
+  signal vcardFinished(string message, bool success)
 
   function safeText(value, maximum) {
     if (typeof value !== "string" || value.length > maximum) return ""
@@ -373,6 +375,7 @@ Item {
     if (worker.running) return false
     error = ""
     currentOperation = operation
+    if (operation === "vcard") vcardReported = false
     reloadAfterExit = false
     refreshCandidatesAfterExit = false
     // A periodic read is bookkeeping, not a visible operation. Toggling
@@ -481,6 +484,17 @@ Item {
     return start("open", { handle: handle, token: token })
   }
 
+  function copyVCard(handle) {
+    notice = "Exporting the contact from the Mac…"
+    return start("vcard", { handle: handle })
+  }
+
+  function reportVCard(message, success) {
+    if (currentOperation !== "vcard" || vcardReported) return
+    vcardReported = true
+    vcardFinished(message, success === true)
+  }
+
   function compareCards(handle, ownerToken) {
     if (!validToken(ownerToken)) return false
     comparison = null
@@ -549,6 +563,12 @@ Item {
     mutationRequest = null
     notice = "No Contacts data was changed"
     return true
+  }
+
+  function discardUnsavedContacts() {
+    if (!contactWrites) return false
+    notice = "Closing Contacts on the Mac without saving its pending edit…"
+    return start("discard-unsaved", {})
   }
 
   function prepareLink() {
@@ -626,16 +646,19 @@ Item {
   function consume(raw) {
     if (raw.length > 49152) {
       error = "Identity helper returned too much data"
+      reportVCard(error, false)
       return
     }
     var result
     try { result = JSON.parse(raw.trim()) }
     catch (e) {
       error = "Identity helper returned invalid JSON"
+      reportVCard(error, false)
       return
     }
     if (!result || result.ok !== true) {
       error = safeError(result ? result.error : "Identity helper failed")
+      reportVCard(error, false)
       return
     }
     if (currentOperation === "read") {
@@ -680,6 +703,32 @@ Item {
       notice = options.length === 0
         ? "No matching contact cards were found"
         : options.length === 1 ? "Contacts has one matching name" : "Contacts has conflicting names"
+      return
+    }
+    if (currentOperation === "vcard") {
+      var copiedName = safeText(result.name, 160)
+      var copiedHandle = safeText(result.handle, 320)
+      var copiedFileName = safeText(result.fileName, 160)
+      var copiedBytes = Number(result.bytes)
+      if (copiedName === "" || copiedHandle === "" || !Number.isInteger(copiedBytes)
+          || copiedBytes < 1 || copiedBytes > 2097152
+          || copiedFileName === "" || !copiedFileName.endsWith(".vcf")) {
+        error = "Contacts returned an invalid vCard confirmation"
+        reportVCard(error, false)
+        return
+      }
+      notice = "Copied “" + copiedFileName + "” — paste it as a vCard file"
+      reportVCard(notice, true)
+      return
+    }
+    if (currentOperation === "discard-unsaved") {
+      if (typeof result.discarded !== "boolean") {
+        error = "Contacts returned an invalid unsaved-change confirmation"
+        return
+      }
+      notice = result.discarded
+        ? "Discarded the pending Contacts edit and closed Contacts on the Mac"
+        : "Contacts had no pending edit to discard"
       return
     }
     if (currentOperation === "audit") {
@@ -884,6 +933,8 @@ Item {
     onExited: function(code, status) {
       root.loading = false
       if (code !== 0 && root.error === "") root.error = "Contact-name operation failed"
+      if (root.currentOperation === "vcard" && !root.vcardReported)
+        root.reportVCard(root.error || "Could not copy the contact vCard", false)
       if (root.pendingReviewHandle !== "") {
         var requested = root.pendingReviewHandle
         root.pendingReviewHandle = ""

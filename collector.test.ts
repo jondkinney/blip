@@ -168,8 +168,12 @@ describe("isGroupChat", () => {
     expect(r.online).toBe(false);
   });
   test("groups JSON with an array of participants (claude-on-mac 1.4)", () => {
-    const g = fetchGroups((() => ({ status: 0, stdout: JSON.stringify([{ chat: "chat1", guid: "any;+;chat1", name: "", participants: ["+1", "+2"], last: null }]), stderr: "" })) as never);
+    const g = fetchGroups((() => ({ status: 0, stdout: JSON.stringify([{
+      chat: "chat1", guid: "any;+;chat1", name: "", participants: ["+1", "+2"],
+      participant_names: { "+1": "Alex", "+2": "Pat" }, last: null,
+    }]), stderr: "" })) as never);
     expect(g!.chat1.participants).toEqual(["+1", "+2"]);
+    expect(g!.chat1.participantNames).toEqual({ "+1": "Alex", "+2": "Pat" });
   });
 });
 
@@ -244,6 +248,20 @@ describe("self-echo in the thread list", () => {
       { [guid]: { name: "", guid: "any;+;" + guid, participants: ["+15550100004", "+15550100005"] } },
     );
     expect(threads[0]!.name).toBe("Jordan Blake, +15550100005");
+  });
+
+  test("group threads expose named participants for explicit contact actions", () => {
+    const guid = "053856bb0d9a40e392db59eace1c56d1";
+    const groups = {
+      [guid]: { name: "Friends", guid: "any;+;" + guid,
+        participants: ["+15550100004", "+15550100005"],
+        participantNames: { "+15550100004": "Jordan", "+15550100005": "Casey" } },
+    };
+    const thread = buildThreads([msg({ chat: guid, handle: "+15550100004" })], "", {}, groups)[0]!;
+    expect(thread.participants).toEqual([
+      { handle: "+15550100004", name: "Jordan" },
+      { handle: "+15550100005", name: "Casey" },
+    ]);
   });
 
   test("a group with no metadata at all falls back to its id, never one member", () => {

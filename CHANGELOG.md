@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Add conversation/message context menus for contact work. Direct chats offer
+  Copy vCard and Edit contact; groups expand those actions into named
+  participant submenus. vCards are exported by macOS Contacts as real `.vcf`
+  clipboard files, while editing jumps into the exact Blip contact workspace.
+- Add subtle post-avatar separators between chronological sidebar discussions,
+  matching the visual grouping used by Messages on macOS.
+- Balance the vertical space above and below sidebar search before the pinned
+  grid, and carry Mac-resolved participant names into group contact menus.
+- Enlarge tapback reactions, add Messages-like background padding and two-dot
+  tails, raise them away from message text, and render their fill fully opaque
+  without the badge-style outline.
+- Tailor contact context menus to direct chats, groups, and message-only rows,
+  eliminating hidden blank entries and irrelevant disabled flyouts.
+- Fix Mac contact edits that failed with “Message not understood”: unchanged
+  phone/email/address collections now retain their source fields, while an
+  actual replacement removes the concrete Contacts field specifiers.
+- Offer an explicit two-step recovery when Contacts is holding an unsaved edit
+  left by a failed automation attempt; it closes Contacts without saving only
+  after the user confirms that any pending Mac-side edit may be discarded.
+- Make cross-account consolidation commit and verify the chosen surviving
+  card before any source deletion. Source cards are then deleted independently,
+  so a rejected iCloud update can never remove the corresponding Gmail card.
 - Match the Appearance preview bubbles to the live sender-corner treatment,
   and add a portable 12/24-hour conversation-list time preference (AM/PM by
   default).

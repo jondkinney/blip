@@ -906,6 +906,13 @@ def cmd_groups(con, args):
         (args.n,),
     ).fetchall()
     if args.json:
+        participant_lists = [
+            (r["participants"] or "").split(",") if r["participants"] else []
+            for r in rows
+        ]
+        contact_names = unified_names([
+            handle for members in participant_lists for handle in members
+        ]) if not args.no_names else {}
         print(
             json.dumps(
                 [
@@ -913,10 +920,18 @@ def cmd_groups(con, args):
                         "chat": r["chat_identifier"],
                         "guid": r["guid"],
                         "name": r["display_name"] or "",
-                        "participants": (r["participants"] or "").split(",") if r["participants"] else [],
+                        "participants": participant_lists[index],
+                        "participant_names": {
+                            handle: (
+                                contact_names.get(handle, {}).get("name")
+                                or name_for(handle)
+                                or handle
+                            )
+                            for handle in participant_lists[index]
+                        } if not args.no_names else {},
                         "last": fmt_ts(r["last_date"]) if r["last_date"] else None,
                     }
-                    for r in rows
+                    for index, r in enumerate(rows)
                 ],
                 indent=2,
             )

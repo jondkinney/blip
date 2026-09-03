@@ -14,6 +14,7 @@
  *   printf '%s' '{"handle":"…","name":"Family line"}' | bun identities.ts custom
  *   printf '%s' '{"handle":"…"}' | bun identities.ts clear
  *   printf '%s' '{"handle":"…","token":"sha256:…"}' | bun identities.ts open
+ *   printf '%s' '{"handle":"…"}' | bun identities.ts vcard
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts compare
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…","token":"sha256:…","revision":"sha256:…","card":{…}}' | bun identities.ts edit-prepare
  *   printf '%s' '{"handle":"…","ownerToken":"sha256:…"}' | bun identities.ts link-prepare
@@ -42,11 +43,14 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export const MAX_IDENTITIES_BYTES = 48 * 1024;
 export const MAX_IDENTITY_REQUEST_BYTES = 48 * 1024;
 export const MAX_IDENTITY_OUTPUT_BYTES = 48 * 1024;
 export const MAX_BRIDGE_OUTPUT_BYTES = 48 * 1024;
+export const MAX_VCARD_BYTES = 2 * 1024 * 1024;
+export const MAX_VCARD_RESPONSE_BYTES = 3 * 1024 * 1024;
 export const MAX_IDENTITY_ENTRIES = 64;
 export const MAX_IDENTITY_CANDIDATES = 8;
 export const MAX_IDENTITY_CARDS = 64;
@@ -1009,9 +1013,103 @@ export function contactMutationOnMac(
   return { result: mutation };
 }
 
+function vCardFileName(name: string): string {
+  const safe = name.normalize("NFKC")
+    .replace(/[\\/\0-\x1f\x7f]/g, "_")
+    .replace(/^\.+/, "")
+    .trim()
+    .slice(0, 120);
+  return `${safe || "Contact"}.vcf`;
+}
+
+function writeClipboardVCard(card: Buffer, name: string, runtimeRoot: string): {
+  path: string;
+  fileName: string;
+} {
+  const copyDirectory = join(
+    runtimeRoot,
+    "blip",
+    "vcards",
+    `${Date.now()}-${process.pid}-${randomBytes(8).toString("hex")}`,
+  );
+  const directoryFd = openPinnedDirectory(copyDirectory, true);
+  const fileName = vCardFileName(name);
+  let fileFd = -1;
+  try {
+    fileFd = openSync(
+      pinnedPath(directoryFd, fileName),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    let offset = 0;
+    while (offset < card.length)
+      offset += writeSync(fileFd, card, offset, card.length - offset);
+    fchmodSync(fileFd, 0o600);
+    fsyncSync(fileFd);
+  } finally {
+    if (fileFd >= 0) closeSync(fileFd);
+    closeSync(directoryFd);
+  }
+  return { path: join(copyDirectory, fileName), fileName };
+}
+
+/** Export one unambiguous Mac contact and copy a real .vcf file on Wayland. */
+export function copyContactVCard(
+  handle: unknown,
+  runner: Runner = spawnSync,
+  clipboardRunner: Runner = spawnSync,
+  runtimeRoot: string = process.env.XDG_RUNTIME_DIR
+    ?? `/run/user/${typeof process.getuid === "function" ? process.getuid() : 1000}`,
+): { handle: string; name: string; bytes: number; fileName: string } {
+  const normalizedHandle = normalizeHandle(handle);
+  const home = process.env.HOME ?? homedir();
+  const result = runner(join(home, "bin", "contacts"), ["--json", "resolve"], {
+    encoding: "utf8",
+    input: JSON.stringify({ operation: "vcard", handle: normalizedHandle }),
+    timeout: 35000,
+    maxBuffer: MAX_VCARD_RESPONSE_BYTES,
+  });
+  if (result.error) throw new Error(result.error.message || "Contacts bridge failed");
+  const stdout = String(result.stdout || "");
+  if (Buffer.byteLength(stdout) > MAX_VCARD_RESPONSE_BYTES)
+    throw new Error("Contacts returned too much vCard data");
+  let response: unknown;
+  try { response = JSON.parse(stdout); }
+  catch { throw new Error("Contacts returned an invalid vCard response"); }
+  if (response === null || typeof response !== "object" || Array.isArray(response))
+    throw new Error("Contacts returned an invalid vCard response");
+  const body = response as Record<string, unknown>;
+  if (result.status !== 0 || body.ok !== true)
+    throw new Error(safeError(body.error || "Contacts vCard export failed"));
+  if (typeof body.vcard !== "string" || body.vcard.length > MAX_VCARD_RESPONSE_BYTES
+      || !/^[A-Za-z0-9+/=\r\n]+$/.test(body.vcard))
+    throw new Error("Contacts returned an invalid vCard");
+  const card = Buffer.from(body.vcard.replace(/[\r\n]/g, ""), "base64");
+  if (!card.length || card.length > MAX_VCARD_BYTES
+      || !card.subarray(0, 32).toString("utf8").startsWith("BEGIN:VCARD"))
+    throw new Error("Contacts returned an invalid vCard");
+  const name = normalizeIdentityName(body.name);
+  const file = writeClipboardVCard(card, name, runtimeRoot);
+  // Nautilus uses this standard GNOME file-copy target. Supplying a file URI,
+  // rather than raw vCard text, makes Paste create Name.vcf as users expect.
+  const copied = clipboardRunner("wl-copy", ["--type", "x-special/gnome-copied-files"], {
+    input: Buffer.from(`copy\n${pathToFileURL(file.path).href}\n`, "utf8"),
+    timeout: 5000,
+    maxBuffer: 4096,
+  });
+  if (copied.error) throw new Error(copied.error.message || "Could not access the clipboard");
+  if (copied.status !== 0) throw new Error("Could not copy the vCard to the clipboard");
+  return {
+    handle: normalizedHandle,
+    name,
+    bytes: card.length,
+    fileName: file.fileName,
+  };
+}
+
 export function resolveOnMac(
   operation: "candidates" | "open" | "compare" | "link-prepare" | "link"
-    | "inspect" | "remove" | "undo",
+    | "inspect" | "remove" | "undo" | "discard-unsaved",
   handle: unknown = undefined,
   token: unknown = undefined,
   runner: Runner = spawnSync,
@@ -1032,10 +1130,13 @@ export function resolveOnMac(
   comparison?: ContactComparison;
   linkPreview?: ContactLinkPreview;
   linkResult?: ContactLinkResult;
+  discarded?: boolean;
 } {
-  const normalizedHandle = operation === "undo" ? "" : normalizeHandle(handle);
+  const normalizedHandle = operation === "undo" || operation === "discard-unsaved"
+    ? "" : normalizeHandle(handle);
   const request: Record<string, unknown> = { operation };
   if (operation === "undo") request.undoToken = normalizeUndoToken(token);
+  else if (operation === "discard-unsaved") { /* no contact data crosses this boundary */ }
   else request.handle = normalizedHandle;
   if (operation === "open" || operation === "inspect" || operation === "remove")
     request.token = normalizeContactToken(token);
@@ -1075,6 +1176,11 @@ export function resolveOnMac(
   const body = response as Record<string, unknown>;
   if (result.status !== 0 || body.ok !== true)
     throw new Error(safeError(body.error || "Contacts operation failed"));
+  if (operation === "discard-unsaved") {
+    if (typeof body.discarded !== "boolean")
+      throw new Error("Contacts returned an invalid unsaved-change result");
+    return { discarded: body.discarded };
+  }
   if (operation === "open") {
     if (body.opened !== true) throw new Error("Contacts could not open this card");
     return {
@@ -1231,6 +1337,14 @@ async function main(): Promise<void> {
       });
       return;
     }
+    if (operation === "vcard") {
+      const result = copyContactVCard(request.handle);
+      emit({
+        ok: true, handle: result.handle, name: result.name,
+        bytes: result.bytes, fileName: result.fileName,
+      });
+      return;
+    }
     if (operation === "audit") {
       const audit = auditContactsOnMac(request.handles);
       emit({ ok: true, audit });
@@ -1315,9 +1429,16 @@ async function main(): Promise<void> {
       emit({ ok: true, ...result.undo });
       return;
     }
+    if (operation === "discard-unsaved") {
+      if (!contactWritesEnabled())
+        throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
+      const result = resolveOnMac("discard-unsaved");
+      emit({ ok: true, discarded: result.discarded === true });
+      return;
+    }
     throw new Error(
-      "operation must be read, candidates, audit, choose, custom, clear, open, compare, edit-prepare, "
-      + "edit, delete-prepare, delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo",
+      "operation must be read, candidates, vcard, audit, choose, custom, clear, open, compare, edit-prepare, "
+      + "edit, delete-prepare, delete, merge-prepare, merge, link-prepare, link, inspect, remove, undo, or discard-unsaved",
     );
   } catch (error) {
     emit({ ok: false, error: safeError(error) });

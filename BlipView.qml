@@ -61,6 +61,14 @@ FocusScope {
   function fontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
   function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
   function corner(value) { return Math.max(0, Math.round(value * cornerScale)) }
+  function opaqueOver(fill, background) {
+    var alpha = fill.a
+    return Qt.rgba(
+      fill.r * alpha + background.r * (1 - alpha),
+      fill.g * alpha + background.g * (1 - alpha),
+      fill.b * alpha + background.b * (1 - alpha), 1
+    )
+  }
   function contrastText(fill) {
     var alpha = fill.a
     var red = fill.r * alpha + Color.background.r * (1 - alpha)
@@ -167,6 +175,10 @@ FocusScope {
   property string sendChat: ""          // immutable context for the current send
   property string sendText: ""
   property string reloadChat: ""
+  property string contactToast: ""
+  property bool contactToastError: false
+  property var contextPeople: []
+  property string contextMessageText: ""
 
   readonly property bool inThread: active !== null
   // last_ts of the open conversation as of its last load — the push watcher
@@ -212,6 +224,87 @@ FocusScope {
   }
   // Same rule as collector.isGroupChat(): anything that is not a phone/email.
   function isGroupId(c) { c = String(c || ""); return c !== "" && !/^\+?[0-9]{5,}$/.test(c) && c.indexOf("@") < 0 }
+  function isContactHandle(value) {
+    var handle = String(value || "")
+    return /^\+?[0-9][0-9 ()./-]{2,39}$/.test(handle)
+      || /^[^@\s]+@[^@\s]+$/.test(handle)
+  }
+  function contactHandleKey(value) {
+    var handle = String(value || "")
+    if (handle.indexOf("@") >= 0) return "email:" + handle.toLowerCase()
+    var digits = handle.replace(/\D/g, "")
+    return "phone:" + (digits.length >= 10 ? digits.slice(-10) : digits)
+  }
+  function contactPeople(thread) {
+    if (!thread) return []
+    var result = []
+    var seen = ({})
+    function add(handle, name) {
+      handle = String(handle || "").trim()
+      if (!root.isContactHandle(handle)) return
+      var key = root.contactHandleKey(handle)
+      if (seen[key] || result.length >= 64) return
+      seen[key] = true
+      name = String(name || handle).trim()
+      result.push({ handle: handle, name: name === "" ? handle : name })
+    }
+    if (!root.isGroupId(String(thread.chat || ""))) {
+      add(thread.handle || thread.chat, thread.pin_name || thread.name || thread.chat)
+      return result
+    }
+    var participants = Array.isArray(thread.participants) ? thread.participants : []
+    for (var i = 0; i < participants.length; i++) {
+      var person = participants[i]
+      if (typeof person === "string") add(person, person)
+      else add(person && person.handle, person && person.name)
+    }
+    // Cached group metadata from an older build may not have participant
+    // names yet. Recent inbound bubbles safely fill that gap until refresh.
+    if (thread === root.active) {
+      for (var j = 0; j < root.bubbles.length; j++) {
+        var bubble = root.bubbles[j]
+        if (!bubble.from_me) add(bubble.handle, bubble.name)
+      }
+    }
+    return result
+  }
+  function personMenuLabel(person) {
+    var name = String(person && person.name || "")
+    var handle = String(person && person.handle || "")
+    return name !== "" && name !== handle ? name + "  ·  " + handle : handle
+  }
+  function showContactToast(message, failed) {
+    contactToast = String(message || "")
+    contactToastError = failed === true
+    contactToastTimer.restart()
+  }
+  function openContactContext(thread, messageText) {
+    var people = contactPeople(thread)
+    contextPeople = people
+    contextMessageText = String(messageText || "")
+    if (people.length === 0 && contextMessageText === "") {
+      showContactToast("No contact person is available for this conversation", true)
+      return
+    }
+    if (people.length === 0) messageOnlyMenu.popup()
+    else if (people.length === 1)
+      (contextMessageText === "" ? directContactMenu : directMessageMenu).popup()
+    else
+      (contextMessageText === "" ? groupContactMenu : groupMessageMenu).popup()
+  }
+  function copyContactVCard(person) {
+    if (!person || !isContactHandle(person.handle)) return
+    if (!settingsView.copyVCard(person.handle)) {
+      showContactToast("Contacts is busy; try again in a moment", true)
+      return
+    }
+    showContactToast("Exporting “" + person.name + "” from Mac Contacts…", false)
+  }
+  function editContact(person) {
+    if (!person || !isContactHandle(person.handle)) return
+    openSettings("contacts")
+    Qt.callLater(function() { settingsView.editContact(person.handle) })
+  }
   function threadContainsChat(thread, chat) {
     if (!thread) return false
     var wanted = String(chat || "")
@@ -1315,6 +1408,10 @@ FocusScope {
               Layout.fillWidth: true
               visible: root.online && root.listShowing && !root.searchShowing
                        && !root.newMode && root.pinnedThreads.length > 0
+              // Match the header-to-search breathing room: listContent's
+              // spacing supplies most of this gap and this margin supplies
+              // the difference from the outer divider spacing.
+              Layout.topMargin: root.space(root.splitView ? 4 : 2)
               spacing: root.space(7)
 
               GridLayout {
@@ -1364,6 +1461,10 @@ FocusScope {
 
                 HoverHandler { id: rowHover }
                 TapHandler { onTapped: root.openThread(modelData) }
+                TapHandler {
+                  acceptedButtons: Qt.RightButton
+                  onTapped: root.openContactContext(modelData, "")
+                }
 
                 RowLayout {
                   id: rowRow
@@ -1467,6 +1568,20 @@ FocusScope {
                     }
                   }
 
+                }
+
+                // Messages separates chronological conversations with a
+                // hairline that begins after the avatar rather than cutting
+                // through the unread-dot/avatar gutter.
+                Rectangle {
+                  anchors.left: parent.left
+                  anchors.leftMargin: root.space(6 + 9 + 8) + avatarCircle.width + root.space(8)
+                  anchors.right: parent.right
+                  anchors.rightMargin: root.space(6)
+                  anchors.bottom: parent.bottom
+                  height: Math.max(1, Math.round(Style.spaceReal(1)))
+                  visible: index < root.regularThreads.length - 1
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
                 }
               }
             }
@@ -1622,6 +1737,11 @@ FocusScope {
 
                 Layout.fillWidth: true
                 spacing: root.space(2)
+
+                TapHandler {
+                  acceptedButtons: Qt.RightButton
+                  onTapped: root.openContactContext(root.active, String(modelData.text || ""))
+                }
 
                 // day divider — "Today", "Yesterday", "Aug 28"
                 Text {
@@ -1913,9 +2033,10 @@ FocusScope {
                 // when the delegate's own width collapses to its content.
                 RowLayout {
                   Layout.fillWidth: true
-                  // a tapback pill overlaps the top edge — leave room for it
+                  // A Messages-sized tapback pill overlaps the top edge —
+                  // reserve its raised portion so adjacent runs stay clear.
                   Layout.topMargin: (modelData.groupStart ? root.space(6) : 0)
-                                    + ((modelData.tapbacks || []).length > 0 ? root.space(12) : 0)
+                                    + ((modelData.tapbacks || []).length > 0 ? root.space(23) : 0)
                   visible: !modelData.retracted &&
                            (String(modelData.text || "") !== "" || (modelData.attachments || []).length === 0) &&
                            modelData.linkOnly !== true
@@ -2015,33 +2136,62 @@ FocusScope {
                       Keys.onEscapePressed: { deselect(); composeField.forceActiveFocus() }
                     }
 
-                    // right-click = copy the whole message
-                    TapHandler {
-                      acceptedButtons: Qt.RightButton
-                      onTapped: root.copyText(String(modelData.text || ""))
-                    }
-
                     // tapback pill overlapping the corner opposite the tail
                     Rectangle {
+                      id: tapbackPill
                       visible: (modelData.tapbacks || []).length > 0
-                      width: Math.ceil(tapbackText.implicitWidth) + root.space(12)
-                      height: Math.ceil(tapbackText.implicitHeight) + root.space(8)
+                      readonly property real minimumSize: Math.max(
+                        root.space(32), Math.ceil(tapbackText.implicitHeight) + root.space(12)
+                      )
+                      width: Math.max(
+                        minimumSize, Math.ceil(tapbackText.implicitWidth) + root.space(18)
+                      )
+                      height: minimumSize
                       radius: height / 2
-                      color: bubbleRow.mine ? Qt.darker(root.mineFill, 2.2) : root.mineFill
-                      border.color: Qt.rgba(0, 0, 0, 0.5)
-                      border.width: 2
+                      // Composite once against the theme background so the
+                      // pill and its tail remain opaque where they overlap a
+                      // translucent message bubble.
+                      color: root.incomingColorSetting === "theme"
+                        ? root.opaqueOver(
+                            Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28),
+                            Color.background
+                          )
+                        : root.opaqueOver(Qt.darker(root.theirsFill, 1.2), Color.background)
+                      border.width: 0
                       anchors.top: parent.top
-                      anchors.topMargin: -root.space(12)
+                      anchors.topMargin: -Math.round(height * 0.74)
                       anchors.right: bubbleRow.mine ? undefined : parent.right
-                      anchors.rightMargin: bubbleRow.mine ? 0 : -root.space(6)
+                      anchors.rightMargin: bubbleRow.mine ? 0 : -Math.round(width * 0.35)
                       anchors.left: bubbleRow.mine ? parent.left : undefined
-                      anchors.leftMargin: bubbleRow.mine ? -root.space(6) : 0
+                      anchors.leftMargin: bubbleRow.mine ? -Math.round(width * 0.35) : 0
+
+                      Rectangle {
+                        id: tapbackTailLarge
+                        width: Math.round(tapbackPill.height * 0.28)
+                        height: width
+                        radius: width / 2
+                        color: tapbackPill.color
+                        x: bubbleRow.mine ? 0 : tapbackPill.width - width
+                        y: Math.round(tapbackPill.height * 0.76)
+                      }
+                      Rectangle {
+                        id: tapbackTailSmall
+                        width: Math.max(3, Math.round(tapbackPill.height * 0.14))
+                        height: width
+                        radius: width / 2
+                        color: tapbackPill.color
+                        x: bubbleRow.mine
+                          ? -Math.round(tapbackPill.height * 0.08)
+                          : tapbackPill.width - width + Math.round(tapbackPill.height * 0.08)
+                        y: Math.round(tapbackPill.height * 1.08)
+                      }
                       Text {
                         id: tapbackText
+                        z: 1
                         anchors.centerIn: parent
                         text: root.tapbackRow(modelData.tapbacks)
                         textFormat: Text.PlainText
-                        font.pixelSize: root.fontSize(Style.font.caption)
+                        font.pixelSize: root.fontSize(Style.font.heading)
                       }
                     }
                   }
@@ -2333,6 +2483,125 @@ FocusScope {
 
     HoverHandler { id: pinHover; cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: root.openThread(pinTile.thread) }
+    TapHandler {
+      acceptedButtons: Qt.RightButton
+      onTapped: root.openContactContext(pinTile.thread, "")
+    }
+  }
+
+  // Qt's native Menu reserves rows for invisible children, so direct and
+  // group conversations use separate menus instead of hiding irrelevant
+  // actions. This avoids blank rows and disabled group flyouts in DMs.
+  component ContactActionSubmenu: Menu {
+    id: actionMenu
+    required property bool copyAction
+    title: copyAction ? "Copy vCard" : "Edit contact"
+    width: root.space(360)
+    Instantiator {
+      model: root.contextPeople
+      delegate: MenuItem {
+        required property var modelData
+        text: root.personMenuLabel(modelData)
+        onTriggered: {
+          if (actionMenu.copyAction) root.copyContactVCard(modelData)
+          else root.editContact(modelData)
+        }
+      }
+      onObjectAdded: function(index, object) { actionMenu.insertItem(index, object) }
+      onObjectRemoved: function(index, object) { actionMenu.removeItem(object) }
+    }
+  }
+
+  Menu {
+    id: messageOnlyMenu
+    width: root.space(300)
+    MenuItem {
+      text: "Copy message"
+      onTriggered: root.copyText(root.contextMessageText)
+    }
+  }
+
+  Menu {
+    id: directContactMenu
+    width: root.space(340)
+    MenuItem {
+      text: "Copy vCard — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
+      onTriggered: root.copyContactVCard(root.contextPeople[0])
+    }
+    MenuItem {
+      text: "Edit contact — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
+      onTriggered: root.editContact(root.contextPeople[0])
+    }
+  }
+
+  Menu {
+    id: directMessageMenu
+    width: root.space(340)
+    MenuItem {
+      text: "Copy message"
+      onTriggered: root.copyText(root.contextMessageText)
+    }
+    MenuSeparator { }
+    MenuItem {
+      text: "Copy vCard — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
+      onTriggered: root.copyContactVCard(root.contextPeople[0])
+    }
+    MenuItem {
+      text: "Edit contact — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
+      onTriggered: root.editContact(root.contextPeople[0])
+    }
+  }
+
+  Menu {
+    id: groupContactMenu
+    width: root.space(300)
+    ContactActionSubmenu { copyAction: true }
+    ContactActionSubmenu { copyAction: false }
+  }
+
+  Menu {
+    id: groupMessageMenu
+    width: root.space(300)
+    MenuItem {
+      text: "Copy message"
+      onTriggered: root.copyText(root.contextMessageText)
+    }
+    MenuSeparator { }
+    ContactActionSubmenu { copyAction: true }
+    ContactActionSubmenu { copyAction: false }
+  }
+
+  Timer {
+    id: contactToastTimer
+    interval: 3000
+    onTriggered: root.contactToast = ""
+  }
+
+  Rectangle {
+    z: 1000
+    visible: root.contactToast !== "" && !root.settingsMode
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    anchors.margins: root.space(14)
+    implicitWidth: Math.min(root.space(480), contactToastText.implicitWidth + root.space(24))
+    implicitHeight: contactToastText.implicitHeight + root.space(16)
+    radius: root.corner(root.space(9))
+    color: root.contactToastError
+      ? Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.22)
+      : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.22)
+    border.width: 1
+    border.color: root.contactToastError ? root.urgent : root.accent
+    Text {
+      id: contactToastText
+      anchors.fill: parent
+      anchors.margins: root.space(8)
+      text: root.contactToast
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.caption)
+    }
   }
 
   BlipSettings {
@@ -2353,6 +2622,9 @@ FocusScope {
     fontScale: root.fontScale
     density: root.density
     cornerScale: root.cornerScale
+    onVcardFinished: function(message, success) {
+      root.showContactToast(message, !success)
+    }
     onCloseRequested: root.closeSettings()
   }
 

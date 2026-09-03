@@ -97,7 +97,8 @@ Linux side. If the Mac is asleep, the widget dims and says so.
 - **link cards** — URL messages show the preview image, title, and host, like Messages; click opens the link
 - **photos render inline** — images ≤5MB auto-fetch over SSH (HEIC converted on the Mac); click opens full-size. PDFs/videos are chips — click fetches and opens them
 - **send files** — Ctrl+V an image into the compose box, type `/attach <path>`, or drag-and-drop; a caption rides along
-- select text and Ctrl+C · right-click a bubble to copy it whole
+- select text and Ctrl+C · right-click a bubble or conversation for **Copy
+  message**, **Copy vCard**, or **Edit contact**; group chats list each person
 - compose box at the bottom, Enter sends — **DMs and groups**
 
 **Toasts**

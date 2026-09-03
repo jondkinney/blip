@@ -54,6 +54,8 @@ export const GROUP_GAP_MINUTES = 15;
 export interface Bubble {
   ts: string;
   from_me: boolean;
+  /** Sender handle retained for contact actions; never rendered directly when a name exists. */
+  handle: string;
   name: string;
   text: string;
   /** Non-empty on the first message of a new calendar day: "Today", "Aug 28". */
@@ -190,6 +192,7 @@ export function decorate(msgs: ImsgMessage[], today: string): Bubble[] {
     out.push({
       ts: m.ts,
       from_me: m.from_me,
+      handle: m.handle ?? "",
       name: m.name ?? m.handle ?? "",
       // U+FFFC is the object-replacement placeholder Messages leaves where an
       // attachment sat; the chip row carries that information instead.

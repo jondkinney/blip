@@ -6,6 +6,8 @@ private let maxInputBytes = 48 * 1024
 private let maxPersonIds = 7
 private let maxValues = 16
 private let maxNameHandles = 128
+private let maxVCardBytes = 2 * 1024 * 1024
+private let maxVCardResponseBytes = 3 * 1024 * 1024
 private let allowedId = try! NSRegularExpression(pattern: "^[A-Za-z0-9._:-]{1,200}$")
 private let forbiddenDirectionals = Set<UInt32>(
     Array(0x202A...0x202E) + Array(0x2066...0x2069)
@@ -66,15 +68,21 @@ private struct Response: Encodable {
     let names: [ResolvedName]?
 }
 
+private struct VCardResponse: Encodable {
+    let ok: Bool
+    let name: String
+    let vcard: String
+}
+
 private func failure(_ message: String, code: Int) -> NSError {
     NSError(domain: "BlipContacts", code: code,
             userInfo: [NSLocalizedDescriptionKey: message])
 }
 
-private func emit(_ response: Response) {
+private func emit<T: Encodable>(_ response: T, maximum: Int = 4096) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    guard let data = try? encoder.encode(response), data.count <= 4096 else {
+    guard let data = try? encoder.encode(response), data.count <= maximum else {
         FileHandle.standardOutput.write(Data("{\"error\":\"Contacts mutation response failed\",\"ok\":false}".utf8))
         return
     }
@@ -338,7 +346,7 @@ private func safeMessage(_ error: Error) -> String {
 
 do {
     let request = try JSONDecoder().decode(Request.self, from: boundedInput())
-    guard ["available", "delete", "consolidate", "names"].contains(request.operation) else {
+    guard ["available", "delete", "consolidate", "names", "vcard"].contains(request.operation) else {
         throw failure("Contacts mutation operation is invalid", code: 11)
     }
     guard CNContactStore.authorizationStatus(for: .contacts) == .authorized else {
@@ -353,6 +361,33 @@ do {
         emit(Response(ok: true, availableCount: nil, deletedCount: nil,
                       updated: nil, error: nil,
                       names: try resolvedNames(handles, in: store)))
+        exit(0)
+    }
+
+    if request.operation == "vcard" {
+        guard let targetUid = request.targetUid, validId(targetUid), let card = request.card else {
+            throw failure("Contacts vCard request is incomplete", code: 23)
+        }
+        try validateCard(card)
+        let keys: [CNKeyDescriptor] = [
+            CNContactIdentifierKey as CNKeyDescriptor,
+            CNContactVCardSerialization.descriptorForRequiredKeys()
+        ]
+        let target = try exactContact(targetUid, in: store, keys: keys)
+        guard let mutable = target.mutableCopy() as? CNMutableContact else {
+            throw failure("Contacts returned a read-only vCard", code: 24)
+        }
+        try apply(card, to: mutable)
+        let data = try CNContactVCardSerialization.data(with: [mutable])
+        guard !data.isEmpty, data.count <= maxVCardBytes else {
+            throw failure("The contact vCard is too large to copy", code: 25)
+        }
+        let display = [card.firstName, card.middleName, card.lastName]
+            .filter { !$0.isEmpty }.joined(separator: " ")
+        let name = !display.isEmpty ? display
+            : (!card.organization.isEmpty ? card.organization : card.nickname)
+        emit(VCardResponse(ok: true, name: name, vcard: data.base64EncodedString()),
+             maximum: maxVCardResponseBytes)
         exit(0)
     }
 

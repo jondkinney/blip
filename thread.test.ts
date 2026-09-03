@@ -98,6 +98,7 @@ describe("decorate", () => {
     expect(b[0]!.groupStart).toBe(true);
     expect(b[0]!.groupEnd).toBe(true);
     expect(b[0]!.time).toBe("12:00 PM");
+    expect(b[0]!.handle).toBe("+15551234567");
   });
 
   test("consecutive messages from one sender form a single group", () => {

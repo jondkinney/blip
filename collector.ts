@@ -111,7 +111,11 @@ export interface Thread {
   pin_order?: number;
   /** Messages-style short label from Contacts' unified-card view. */
   pin_name?: string;
+  /** Other people in a group, for explicit per-person contact actions. */
+  participants?: GroupParticipant[];
 }
+
+export interface GroupParticipant { handle: string; name: string }
 
 export interface Toast {
   chat: string;
@@ -132,7 +136,12 @@ export interface Toast {
  *               Only moves on --mark-read (panel open, or middle-click).
  */
 /** guid is what AppleScript's `chat id` wants ("any;+;<id>"); chat is the bare id. */
-export interface GroupInfo { name: string; guid: string; participants: string[] }
+export interface GroupInfo {
+  name: string;
+  guid: string;
+  participants: string[];
+  participantNames?: Record<string, string>;
+}
 
 export interface BlipState {
   watermark: string;
@@ -396,8 +405,25 @@ export function chatKey(m: ImsgMessage | undefined): string {
  */
 export function groupName(chat: string, info: GroupInfo | undefined, byHandle: Map<string, string>): string {
   if (info?.name) return info.name;
-  const members = (info?.participants ?? []).map((h) => byHandle.get(h) || h);
+  const members = groupParticipants(info, byHandle).map((member) => member.name);
   return members.length ? members.join(", ") : chat;
+}
+
+/** Bounded, de-duplicated people for a group contact menu. */
+export function groupParticipants(
+  info: GroupInfo | undefined,
+  byHandle: Map<string, string> = new Map(),
+): GroupParticipant[] {
+  const result: GroupParticipant[] = [];
+  const seen = new Set<string>();
+  for (const raw of info?.participants ?? []) {
+    const handle = String(raw || "").trim().slice(0, 320);
+    if (!handle || seen.has(handle) || result.length >= 64) continue;
+    seen.add(handle);
+    const resolved = info?.participantNames?.[handle] || byHandle.get(handle) || handle;
+    result.push({ handle, name: String(resolved).trim().slice(0, 160) || handle });
+  }
+  return result;
 }
 
 export function buildThreads(
@@ -438,6 +464,7 @@ export function buildThreads(
       last_from_me: last.from_me,
       count: sorted.length,
       unread,
+      ...(isGroupChat(chat) ? { participants: groupParticipants(groups[chat], byHandle) } : {}),
     });
   }
 
@@ -818,6 +845,9 @@ export function mergeChats(
     const name = group
       ? (groupInfo?.name || chat.name || bucket.name || canonical)
       : (chat.last_name || chat.name || bucket.name || canonical);
+    const knownParticipantNames = new Map<string, string>(
+      (bucket.participants ?? []).map((person) => [person.handle, person.name]),
+    );
     out.push({
       ...bucket,
       aliases: chat.aliases ?? [chat.id],
@@ -825,6 +855,11 @@ export function mergeChats(
       name,
       service: chat.service || bucket.service,
       last_text: chat.last === bucket.last_ts ? chat.last_text : messagePreview(bucket.last_text),
+      ...(group ? {
+        participants: groupInfo
+          ? groupParticipants(groupInfo, knownParticipantNames)
+          : bucket.participants ?? [],
+      } : {}),
       ...(chat.pinned_order !== null ? {
         pinned: true,
         pin_order: chat.pinned_order,
@@ -853,6 +888,7 @@ export function mergeChats(
       last_from_me: c.last_from_me,
       count: 0,
       unread: (c.aliases ?? [c.id]).reduce((sum, alias) => sum + (unreadCounts[alias] ?? 0), 0),
+      ...(group ? { participants: groupParticipants(groupInfo) } : {}),
       ...(c.pinned_order !== null ? {
         pinned: true,
         pin_order: c.pinned_order,
@@ -872,12 +908,20 @@ export function fetchGroups(runner = spawnSync): Record<string, GroupInfo> | nul
     const out: Record<string, GroupInfo> = {};
     for (const r of rows) {
       if (!r || typeof r.chat !== "string") continue;
+      const participantNames = r.participant_names && typeof r.participant_names === "object"
+        && !Array.isArray(r.participant_names)
+        ? Object.fromEntries(Object.entries(r.participant_names)
+          .filter(([handle, name]) => typeof handle === "string" && handle.length <= 320
+            && typeof name === "string" && name.length <= 160)
+          .slice(0, 64)) as Record<string, string>
+        : {};
       out[r.chat] = {
         name: typeof r.name === "string" ? r.name : "",
         guid: typeof r.guid === "string" ? r.guid : "",
         participants: Array.isArray(r.participants)
           ? r.participants.filter((h: unknown) => typeof h === "string")
           : typeof r.participants === "string" ? r.participants.split(",").filter(Boolean) : [],
+        ...(Object.keys(participantNames).length ? { participantNames } : {}),
       };
     }
     return out;

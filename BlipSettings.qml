@@ -31,6 +31,7 @@ FocusScope {
     || identitySettings.editorActive
 
   signal closeRequested()
+  signal vcardFinished(string message, bool success)
 
   function fontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
   function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
@@ -40,11 +41,21 @@ FocusScope {
     page = value === "appearance" ? "appearance" : "contacts"
     settingsFlick.contentY = 0
   }
+  function copyVCard(handle) {
+    return identityResolver.copyVCard(handle)
+  }
+  function editContact(handle) {
+    showPage("contacts")
+    identitySettings.editContact(handle)
+  }
 
   BlipIdentities {
     id: identityResolver
     onChoicesChanged: {
       if (root.hostWidget) root.hostWidget.refresh(true, false)
+    }
+    onVcardFinished: function(message, success) {
+      root.vcardFinished(message, success)
     }
   }
 
@@ -175,6 +186,13 @@ FocusScope {
           fontScale: root.fontScale
           density: root.density
           cornerScale: root.cornerScale
+          onFocusAreaRequested: function(localY) {
+            Qt.callLater(function() {
+              var mapped = identitySettings.mapToItem(settingsContent, 0, localY).y
+              var maximum = Math.max(0, settingsFlick.contentHeight - settingsFlick.height)
+              settingsFlick.contentY = Math.max(0, Math.min(maximum, mapped - root.space(12)))
+            })
+          }
         }
 
         Item { Layout.preferredHeight: root.space(6) }
