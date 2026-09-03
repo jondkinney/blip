@@ -328,11 +328,13 @@ private func apply(_ card: Card, to contact: CNMutableContact) throws {
     }
 }
 
-private func safeMessage(_ error: Error) -> String {
+private func safeMessage(_ error: Error, stage: String) -> String {
     let nsError = error as NSError
     let raw: String
     if nsError.domain == NSCocoaErrorDomain && nsError.code == 134092 {
-        raw = "Contacts rejected a save that crossed contact accounts"
+        raw = stage == "delete sources"
+            ? "Contacts saved the merged contact but could not delete an old source card; reload the cards and try again"
+            : "Contacts could not save this card in its source account"
     } else {
         raw = nsError.localizedDescription
     }
@@ -344,6 +346,7 @@ private func safeMessage(_ error: Error) -> String {
         .joined(separator: " ").prefix(180))
 }
 
+var mutationStage = ""
 do {
     let request = try JSONDecoder().decode(Request.self, from: boundedInput())
     guard ["available", "delete", "update", "consolidate", "names", "vcard"].contains(request.operation) else {
@@ -403,6 +406,7 @@ do {
         try apply(card, to: mutable)
         let save = CNSaveRequest()
         save.update(mutable)
+        mutationStage = "update contact"
         try store.execute(save)
         _ = try exactContact(targetUid, in: store,
                              keys: [CNContactIdentifierKey as CNKeyDescriptor])
@@ -434,6 +438,7 @@ do {
             }
             save.delete(mutable)
         }
+        mutationStage = "delete sources"
         try store.execute(save)
         try requireMissing(identifiers, in: store)
         emit(Response(ok: true, availableCount: nil, deletedCount: contacts.count,
@@ -469,6 +474,7 @@ do {
             }
             save.delete(mutable)
         }
+        mutationStage = "save same-account merge"
         try store.execute(save)
     } else {
         // Contacts can reject a single CNSaveRequest that spans account-backed
@@ -476,10 +482,22 @@ do {
         // is lost, then delete sources in one request per backing container.
         let update = CNSaveRequest()
         update.update(mutableTarget)
+        mutationStage = "update survivor"
         try store.execute(update)
 
+        // Saving the survivor can cause Contacts to rebuild its unified-contact
+        // graph. Objects fetched before that save may then retain stale backing-
+        // store relationships and fail with Cocoa 134092 when deleted. Start a
+        // fresh store session and fetch every source card again by its pinned
+        // identifier before constructing the per-container delete requests.
+        let deletionStore = CNContactStore()
+        let freshSources = try sourceUids.map {
+            try exactContact($0, in: deletionStore,
+                             keys: [CNContactIdentifierKey as CNKeyDescriptor])
+        }
         var grouped: [String: [CNContact]] = [:]
-        for (source, container) in zip(sources, sourceContainers) {
+        for source in freshSources {
+            let container = try containerIdentifier(for: source, in: deletionStore)
             grouped[container, default: []].append(source)
         }
         for contacts in grouped.values {
@@ -490,7 +508,8 @@ do {
                 }
                 deletion.delete(mutable)
             }
-            try store.execute(deletion)
+            mutationStage = "delete sources"
+            try deletionStore.execute(deletion)
         }
     }
     _ = try exactContact(targetUid, in: store,
@@ -500,6 +519,6 @@ do {
                   updated: true, error: nil, names: nil))
 } catch {
     emit(Response(ok: false, availableCount: nil, deletedCount: nil,
-                  updated: nil, error: safeMessage(error), names: nil))
+                  updated: nil, error: safeMessage(error, stage: mutationStage), names: nil))
     exit(1)
 }

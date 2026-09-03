@@ -41,6 +41,10 @@ class ContactResolverTests(unittest.TestCase):
         self.assertIn("save.delete(mutable)", native_source)
         self.assertIn("request.unifyResults = false", native_source)
         self.assertIn("grouped[container, default: []]", native_source)
+        self.assertIn("let deletionStore = CNContactStore()", native_source)
+        self.assertIn("let freshSources = try sourceUids.map", native_source)
+        self.assertIn("try deletionStore.execute(deletion)", native_source)
+        self.assertIn("Contacts saved the merged contact but could not delete", native_source)
 
     def test_native_deletion_uses_fixed_argv_and_private_stdin(self):
         completed = (0, b'{"deletedCount":2,"ok":true}', b"")
