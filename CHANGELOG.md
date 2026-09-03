@@ -7,6 +7,8 @@
   unfurled cards. Conversation headers now use Messages' pinned group title,
   short emoji-only messages use the large bubble-free Messages treatment, and
   incoming group-message runs show the sender's avatar beside their last item.
+- Keep the Wayland clipboard owner alive after exporting a contact, so Copy
+  vCard reliably pastes a real `.vcf` file instead of leaving an empty clipboard.
 - Add conversation/message context menus for contact work. Direct chats offer
   Copy vCard and Edit contact; groups expand those actions into named
   participant submenus. vCards are exported by macOS Contacts as real `.vcf`

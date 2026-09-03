@@ -1053,14 +1053,13 @@ function writeClipboardVCard(card: Buffer, name: string, runtimeRoot: string): {
   return { path: join(copyDirectory, fileName), fileName };
 }
 
-/** Export one unambiguous Mac contact and copy a real .vcf file on Wayland. */
-export function copyContactVCard(
+/** Export one unambiguous Mac contact to an owner-only runtime .vcf file. */
+export function exportContactVCard(
   handle: unknown,
   runner: Runner = spawnSync,
-  clipboardRunner: Runner = spawnSync,
   runtimeRoot: string = process.env.XDG_RUNTIME_DIR
     ?? `/run/user/${typeof process.getuid === "function" ? process.getuid() : 1000}`,
-): { handle: string; name: string; bytes: number; fileName: string } {
+): { handle: string; name: string; bytes: number; fileName: string; fileUri: string } {
   const normalizedHandle = normalizeHandle(handle);
   const home = process.env.HOME ?? homedir();
   const result = runner(join(home, "bin", "contacts"), ["--json", "resolve"], {
@@ -1090,20 +1089,12 @@ export function copyContactVCard(
     throw new Error("Contacts returned an invalid vCard");
   const name = normalizeIdentityName(body.name);
   const file = writeClipboardVCard(card, name, runtimeRoot);
-  // Nautilus uses this standard GNOME file-copy target. Supplying a file URI,
-  // rather than raw vCard text, makes Paste create Name.vcf as users expect.
-  const copied = clipboardRunner("wl-copy", ["--type", "x-special/gnome-copied-files"], {
-    input: Buffer.from(`copy\n${pathToFileURL(file.path).href}\n`, "utf8"),
-    timeout: 5000,
-    maxBuffer: 4096,
-  });
-  if (copied.error) throw new Error(copied.error.message || "Could not access the clipboard");
-  if (copied.status !== 0) throw new Error("Could not copy the vCard to the clipboard");
   return {
     handle: normalizedHandle,
     name,
     bytes: card.length,
     fileName: file.fileName,
+    fileUri: pathToFileURL(file.path).href,
   };
 }
 
@@ -1338,10 +1329,10 @@ async function main(): Promise<void> {
       return;
     }
     if (operation === "vcard") {
-      const result = copyContactVCard(request.handle);
+      const result = exportContactVCard(request.handle);
       emit({
         ok: true, handle: result.handle, name: result.name,
-        bytes: result.bytes, fileName: result.fileName,
+        bytes: result.bytes, fileName: result.fileName, fileUri: result.fileUri,
       });
       return;
     }

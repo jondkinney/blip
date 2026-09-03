@@ -18,7 +18,7 @@ import {
   auditContactsOnMac,
   contactWritesEnabled,
   contactMutationOnMac,
-  copyContactVCard,
+  exportContactVCard,
   identityKey,
   identityNameFor,
   MAX_BRIDGE_CONFIG_BYTES,
@@ -345,9 +345,8 @@ describe("Mac candidate boundary", () => {
     });
   });
 
-  test("vCard export stays on stdin and copies a real owner-only .vcf file", () => {
+  test("vCard export stays on stdin and creates a real owner-only .vcf file", () => {
     let bridgeInput = "";
-    let clipboardInput = Buffer.alloc(0);
     const runtime = fixture().root;
     const card = Buffer.from(
       "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alex Rivera\r\nEND:VCARD\r\n",
@@ -359,23 +358,16 @@ describe("Mac candidate boundary", () => {
       return { status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
         stdout: JSON.stringify({ ok: true, name: "Alex Rivera", vcard: card.toString("base64") }) };
     }) as any;
-    const clipboard = ((_command: string, args: string[], options: any) => {
-      expect(args).toEqual(["--type", "x-special/gnome-copied-files"]);
-      clipboardInput = Buffer.from(options.input);
-      return { status: 0, signal: null, output: [], pid: 2,
-        stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), error: undefined };
-    }) as any;
-    expect(copyContactVCard("+15550100001", runner, clipboard, runtime)).toEqual({
+    const result = exportContactVCard("+15550100001", runner, runtime);
+    expect(result).toEqual({
       handle: "+15550100001", name: "Alex Rivera", bytes: card.length,
       fileName: "Alex Rivera.vcf",
+      fileUri: expect.stringContaining("/Alex%20Rivera.vcf"),
     });
     expect(JSON.parse(bridgeInput)).toEqual({
       operation: "vcard", handle: "+15550100001",
     });
-    const clipboardPayload = clipboardInput.toString("utf8");
-    expect(clipboardPayload).toStartWith("copy\nfile://");
-    expect(clipboardPayload).toEndWith("/Alex%20Rivera.vcf\n");
-    const copiedPath = decodeURIComponent(new URL(clipboardPayload.split("\n")[1]).pathname);
+    const copiedPath = decodeURIComponent(new URL(result.fileUri).pathname);
     expect(readFileSync(copiedPath)).toEqual(card);
     expect(lstatSync(copiedPath).mode & 0o077).toBe(0);
   });
