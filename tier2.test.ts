@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import { cacheFileName, fetchAttachment, imageMetrics, lruEvictions, sanitizeName, wantsJpeg } from "./fetch";
-import { extFor, pickImageType } from "./paste";
+import { extFor, localFileFromPayload, pickFileType, pickImageType, snapshotClipboard } from "./paste";
 import { resolveTarget, sendFile } from "./send-file";
 import { linkHost, normalizeLink } from "./thread";
 import { AVATAR_DIR, avatarKey, fetchAvatar } from "./avatar";
 import { writeFileSync, unlinkSync } from "node:fs";
+import { basename } from "node:path";
 
 describe("fetch cache", () => {
   test("HEIC wants a Mac-side JPEG conversion, others stream raw", () => {
@@ -83,6 +84,45 @@ describe("fetch cache", () => {
     const r = fetchAttachment("123456789012345", "x.png", "image/png", runner);
     expect(r.ok).toBe(false);
     expect(r.online).toBe(false);
+  });
+});
+
+describe("clipboard file paste", () => {
+  test("prefers a GNOME file object over URI-list and text", () => {
+    expect(pickFileType(["text/plain", "text/uri-list", "x-special/gnome-copied-files"]))
+      .toBe("x-special/gnome-copied-files");
+  });
+
+  test("extracts an existing local file from both supported payloads", () => {
+    const tmp = `${process.env.HOME}/.cache/blip-paste-${process.pid}.vcf`;
+    writeFileSync(tmp, "BEGIN:VCARD\nEND:VCARD\n");
+    const uri = new URL(`file://${tmp}`).href;
+    try {
+      expect(localFileFromPayload("x-special/gnome-copied-files", `copy\n${uri}\n`)).toBe(tmp);
+      expect(localFileFromPayload("text/uri-list", `# contact\r\n${uri}\r\n`)).toBe(tmp);
+    } finally { unlinkSync(tmp); }
+  });
+
+  test("rejects remote URIs and missing local files", () => {
+    expect(localFileFromPayload("text/uri-list", "https://example.com/person.vcf\n")).toBe("");
+    expect(localFileFromPayload("text/uri-list", "file:///definitely/missing/person.vcf\n")).toBe("");
+  });
+
+  test("snapshot returns a file attachment before attempting text", () => {
+    const tmp = `${process.env.HOME}/.cache/blip-snapshot-${process.pid}.vcf`;
+    writeFileSync(tmp, "BEGIN:VCARD\nEND:VCARD\n");
+    const calls: string[][] = [];
+    const runner = ((_cmd: string, args: string[]) => {
+      calls.push(args);
+      if (args.includes("--list-types")) {
+        return { status: 0, stdout: "text/plain\nx-special/gnome-copied-files\n" };
+      }
+      return { status: 0, stdout: `copy\n${new URL(`file://${tmp}`).href}\n` };
+    }) as never;
+    try {
+      expect(snapshotClipboard(runner)).toMatchObject({ kind: "file", path: tmp, name: basename(tmp) });
+      expect(calls.some((args) => args.includes("text"))).toBe(false);
+    } finally { unlinkSync(tmp); }
   });
 });
 

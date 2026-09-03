@@ -105,7 +105,8 @@ describe("QML safety invariants", () => {
     expect(settings).toContain("identitySettings.editContact(handle)");
     expect(identitySettings).toContain("directEditorPending");
     expect(identities).toContain('start("vcard", { handle: handle })');
-    expect(identityHelper).toContain('["--type", "x-special/gnome-copied-files"]');
+    expect(identities).toContain('["wl-copy", "--foreground", "--type", "x-special/gnome-copied-files"]');
+    expect(identities).toContain('pendingVcardPayload = "copy\\n" + fileUri + "\\n"');
     expect(identityHelper).toContain('pathToFileURL(file.path).href');
   });
 

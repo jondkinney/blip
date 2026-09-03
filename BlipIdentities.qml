@@ -12,6 +12,8 @@ Item {
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string configPath: home + "/.config/blip/identities.json"
+  readonly property string runtimeDirectory: Quickshell.env("XDG_RUNTIME_DIR")
+  readonly property string vcardUriPrefix: "file://" + runtimeDirectory + "/blip/vcards/"
   readonly property string helperPath:
     decodeURIComponent(Qt.resolvedUrl("identities.ts").toString().replace(/^file:\/\//, ""))
 
@@ -48,6 +50,9 @@ Item {
   property string pendingAuditFingerprint: ""
   property string auditFingerprint: ""
   property bool vcardReported: false
+  property bool vcardClipboardPending: false
+  property string pendingVcardPayload: ""
+  property string pendingVcardFileName: ""
 
   signal choicesChanged()
   signal vcardFinished(string message, bool success)
@@ -495,6 +500,27 @@ Item {
     vcardFinished(message, success === true)
   }
 
+  function startVcardClipboard() {
+    if (pendingVcardPayload === "") return
+    vcardClipboard.payload = pendingVcardPayload
+    vcardClipboard.fileName = pendingVcardFileName
+    vcardClipboardPending = true
+    vcardClipboard.stdinEnabled = true
+    vcardClipboard.running = true
+  }
+
+  function serveVCard(fileUri, fileName) {
+    pendingVcardPayload = "copy\n" + fileUri + "\n"
+    pendingVcardFileName = fileName
+    vcardClipboardPending = true
+    if (vcardClipboard.running) {
+      vcardClipboard.replacing = true
+      vcardClipboard.running = false
+    } else {
+      startVcardClipboard()
+    }
+  }
+
   function compareCards(handle, ownerToken) {
     if (!validToken(ownerToken)) return false
     comparison = null
@@ -709,16 +735,22 @@ Item {
       var copiedName = safeText(result.name, 160)
       var copiedHandle = safeText(result.handle, 320)
       var copiedFileName = safeText(result.fileName, 160)
+      var copiedFileUri = safeText(result.fileUri, 700)
       var copiedBytes = Number(result.bytes)
       if (copiedName === "" || copiedHandle === "" || !Number.isInteger(copiedBytes)
           || copiedBytes < 1 || copiedBytes > 2097152
-          || copiedFileName === "" || !copiedFileName.endsWith(".vcf")) {
+          || copiedFileName === "" || !copiedFileName.endsWith(".vcf")
+          || root.runtimeDirectory === ""
+          || !copiedFileUri.startsWith(root.vcardUriPrefix)
+          || copiedFileUri.indexOf("..") >= 0 || !copiedFileUri.endsWith(".vcf")) {
         error = "Contacts returned an invalid vCard confirmation"
         reportVCard(error, false)
         return
       }
-      notice = "Copied “" + copiedFileName + "” — paste it as a vCard file"
-      reportVCard(notice, true)
+      // Keep wl-copy alive inside the shell process. A short-lived helper can
+      // write the .vcf, but if it owns the Wayland selection and then exits,
+      // the clipboard immediately becomes empty.
+      serveVCard(copiedFileUri, copiedFileName)
       return
     }
     if (currentOperation === "discard-unsaved") {
@@ -933,7 +965,8 @@ Item {
     onExited: function(code, status) {
       root.loading = false
       if (code !== 0 && root.error === "") root.error = "Contact-name operation failed"
-      if (root.currentOperation === "vcard" && !root.vcardReported)
+      if (root.currentOperation === "vcard" && !root.vcardReported
+          && !root.vcardClipboardPending)
         root.reportVCard(root.error || "Could not copy the contact vCard", false)
       if (root.pendingReviewHandle !== "") {
         var requested = root.pendingReviewHandle
@@ -950,6 +983,34 @@ Item {
       if (root.reloadAfterExit) {
         root.reloadAfterExit = false
         Qt.callLater(function() { root.load(true) })
+      }
+    }
+  }
+
+  Process {
+    id: vcardClipboard
+    property string payload: ""
+    property string fileName: ""
+    property bool replacing: false
+    command: ["wl-copy", "--foreground", "--type", "x-special/gnome-copied-files"]
+    onStarted: {
+      write(payload)
+      stdinEnabled = false
+      root.vcardClipboardPending = false
+      root.pendingVcardPayload = ""
+      root.pendingVcardFileName = ""
+      root.notice = "Copied “" + fileName + "” — paste it as a vCard file"
+      root.reportVCard(root.notice, true)
+    }
+    onExited: function(code, status) {
+      if (replacing) {
+        replacing = false
+        Qt.callLater(root.startVcardClipboard)
+        return
+      }
+      if (root.vcardClipboardPending && !root.vcardReported) {
+        root.vcardClipboardPending = false
+        root.reportVCard("Could not keep the vCard on the clipboard", false)
       }
     }
   }

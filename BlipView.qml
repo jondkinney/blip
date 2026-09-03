@@ -932,7 +932,7 @@ FocusScope {
     }
   }
 
-  // Clipboard snapshot (Ctrl+V): image → draft chip, text → insert at cursor.
+  // Clipboard snapshot (Ctrl+V): file/image → draft chip, text → composer.
   Process {
     id: pasteProc
     stdout: StdioCollector {
@@ -942,7 +942,7 @@ FocusScope {
         if (!root.inThread || String(root.active.chat) !== root.pasteChat) return
         try {
           var d = JSON.parse(text.trim())
-          if (d.kind === "image") root.setDraft(String(d.path || ""))
+          if (d.kind === "file" || d.kind === "image") root.setDraft(String(d.path || ""))
           else if (d.kind === "text") {
             composeField.insert(composeField.cursorPosition, String(d.text || ""))
           }
