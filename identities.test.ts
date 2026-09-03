@@ -281,15 +281,56 @@ describe("Mac candidate boundary", () => {
         }),
       };
     }) as any;
-    const result = auditContactsOnMac(
-      ["+15550100001", "+15550100002", "+15550100003"], runner,
-    );
-    expect(result.noMatchCount).toBe(1);
-    expect(result.singleCards[0]?.candidates[0]?.name).toBe("Alex Rivera");
-    expect(result.duplicates[0]?.candidates[0]?.recordCount).toBe(2);
-    expect(JSON.parse(capturedInput)).toEqual({
-      operation: "audit", handles: ["+15550100001", "+15550100002", "+15550100003"],
-    });
+    const savedHome = process.env.HOME;
+    process.env.HOME = mkdtempSync(join(tmpdir(), "blip-audit-test-"));
+    try {
+      const result = auditContactsOnMac(
+        ["+15550100001", "+15550100002", "+15550100003"], runner,
+      );
+      expect(result.cached).toBe(false);
+      expect(result.audit.noMatchCount).toBe(1);
+      expect(result.audit.singleCards[0]?.candidates[0]?.name).toBe("Alex Rivera");
+      expect(result.audit.duplicates[0]?.candidates[0]?.recordCount).toBe(2);
+      expect(JSON.parse(capturedInput)).toEqual({
+        operation: "audit", handles: ["+15550100001", "+15550100002", "+15550100003"],
+      });
+    } finally {
+      process.env.HOME = savedHome;
+    }
+  });
+
+  test("an unchanged store fingerprint reuses the cached scan without re-scanning", () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = mkdtempSync(join(tmpdir(), "blip-audit-cache-"));
+    const fingerprint = "sha256:" + "9".repeat(64);
+    const operations: string[] = [];
+    const runner = ((_command: string, _args: string[], options: any) => {
+      const request = JSON.parse(options.input);
+      operations.push(request.operation);
+      if (request.operation === "fingerprint")
+        return { status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+          stdout: JSON.stringify({ ok: true, fingerprint }) };
+      return { status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+        stdout: JSON.stringify({
+          ok: true, fingerprint, handleCount: 1, noMatchCount: 1,
+          singleCards: [], duplicates: [], conflicts: [],
+        }) };
+    }) as any;
+    try {
+      const first = auditContactsOnMac(["+15550100001"], runner);
+      expect(first.cached).toBe(false);
+      const second = auditContactsOnMac(["+15550100001"], runner);
+      expect(second.cached).toBe(true);
+      expect(second.audit.noMatchCount).toBe(1);
+      // the second call only paid one cheap fingerprint round-trip
+      expect(operations).toEqual(["audit", "fingerprint"]);
+      // a different conversation set never reuses the cache
+      const third = auditContactsOnMac(["+15550100002"], runner);
+      expect(third.cached).toBe(false);
+      expect(operations).toEqual(["audit", "fingerprint", "audit"]);
+    } finally {
+      process.env.HOME = savedHome;
+    }
   });
 
   test("contact audit rejects inconsistent totals and category shapes", () => {
@@ -517,6 +558,47 @@ describe("Mac candidate boundary", () => {
     expect(JSON.parse(captured[1]!)).toEqual({ operation: "edit", ...input, planHash });
     expect(() => contactMutationOnMac("edit", { ...input, planHash: "sha256:bad" }, runner))
       .toThrow("revision");
+  });
+
+  test("cross-name merge threads the second owner token and rejects a duplicate", () => {
+    const token = "sha256:" + "1".repeat(64);
+    const otherToken = "sha256:" + "2".repeat(64);
+    const captured: string[] = [];
+    const comparison = {
+      handle: "+15550100001", name: "Alex Rivera", cardCount: 2,
+      sourceCount: 2, writeEnabled: true,
+      cards: [1, 2].map((number) => ({
+        token: "sha256:" + String(number).repeat(63) + "a",
+        revision: "sha256:" + String(number).repeat(63) + "b", cardNumber: number,
+        accountNumber: number, sourceName: number === 1 ? "iCloud" : "Google",
+        hasPhoto: false, displayName: "Alex Rivera",
+        firstName: "Alex", middleName: "", lastName: "Rivera", nickname: "",
+        organization: "", department: "", jobTitle: "", birthday: "", note: "",
+        phones: [], emails: [], urls: [], addresses: [],
+      })),
+    };
+    const runner = ((_command: string, _args: string[], options: any) => {
+      captured.push(options.input);
+      return { status: 0, signal: null, output: [], pid: 1,
+        stdout: JSON.stringify({ ok: true, ...comparison }), stderr: "", error: undefined };
+    }) as any;
+    resolveOnMac("compare", comparison.handle, token, runner, undefined, undefined, otherToken);
+    expect(JSON.parse(captured[0]!)).toEqual({
+      operation: "compare", handle: comparison.handle, ownerToken: token, otherOwnerToken: otherToken,
+    });
+    expect(() => resolveOnMac(
+      "compare", comparison.handle, token, runner, undefined, undefined, token,
+    )).toThrow("different candidate");
+    const draft = {
+      firstName: "Alex", middleName: "", lastName: "Rivera", nickname: "",
+      organization: "", department: "", jobTitle: "", birthday: "", note: "",
+      phones: [], emails: [], urls: [], addresses: [],
+    };
+    const revisions = comparison.cards.map((card) => ({ token: card.token, revision: card.revision }));
+    expect(() => contactMutationOnMac("merge-prepare", {
+      handle: comparison.handle, ownerToken: token, otherOwnerToken: token,
+      targetToken: comparison.cards[0]!.token, revisions, card: draft,
+    }, runner)).toThrow("different candidate");
   });
 
   test("inspect, removal, and undo keep contact data on stdin and validate receipts", () => {

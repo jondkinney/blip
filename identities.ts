@@ -25,7 +25,7 @@
  */
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -668,7 +668,125 @@ export function normalizeContactAudit(value: unknown, expectedHandleCount: numbe
   return { handleCount, noMatchCount, singleCards, duplicates, conflicts };
 }
 
-export function auditContactsOnMac(value: unknown, runner: Runner = spawnSync): ContactAudit {
+export const MAX_AUDIT_CACHE_BYTES = 512 * 1024;
+const FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+export function auditCachePath(): string {
+  const home = process.env.HOME ?? homedir();
+  return join(home, ".local", "state", "blip", "audit-cache.json");
+}
+
+export function storeFingerprintOnMac(runner: Runner = spawnSync): string {
+  const home = process.env.HOME ?? homedir();
+  const result: SpawnSyncReturns<string> = runner(
+    join(home, "bin", "contacts"),
+    ["--json", "resolve"],
+    { encoding: "utf8", input: JSON.stringify({ operation: "fingerprint" }),
+      timeout: 15000, maxBuffer: MAX_BRIDGE_OUTPUT_BYTES },
+  );
+  if (result.error) throw new Error(result.error.message || "Contacts bridge failed");
+  let response: unknown;
+  try { response = JSON.parse(String(result.stdout || "")); }
+  catch { throw new Error("Contacts returned invalid JSON"); }
+  const body = (response ?? {}) as Record<string, unknown>;
+  if (result.status !== 0 || body.ok !== true)
+    throw new Error(safeError(body.error || "Contacts fingerprint failed"));
+  if (typeof body.fingerprint !== "string" || !FINGERPRINT_PATTERN.test(body.fingerprint))
+    throw new Error("Contacts returned an invalid store fingerprint");
+  return body.fingerprint;
+}
+
+function handleSetFingerprint(handles: string[]): string {
+  const keys = handles.map(identityKey).sort();
+  return "sha256:" + createHash("sha256")
+    .update(`blip-audit-handles-v1 ${JSON.stringify(keys)}`).digest("hex");
+}
+
+type AuditCacheEntry = { storeFingerprint: string; handleFingerprint: string; audit: ContactAudit };
+
+export function readAuditCache(path = auditCachePath()): AuditCacheEntry | null {
+  let directoryFd = -1;
+  let fileFd = -1;
+  try {
+    try { directoryFd = openPinnedDirectory(dirname(path), false); }
+    catch (error: any) { if (error?.code === "ENOENT") return null; throw error; }
+    try {
+      fileFd = openSync(
+        pinnedPath(directoryFd, basename(path)),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error: any) { if (error?.code === "ENOENT") return null; throw error; }
+    const info = fstatSync(fileFd);
+    if (!info.isFile() || info.uid !== currentUid() || info.size > MAX_AUDIT_CACHE_BYTES)
+      return null;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.alloc(Math.min(4096, MAX_AUDIT_CACHE_BYTES + 1 - total));
+      const count = readSync(fileFd, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_AUDIT_CACHE_BYTES) return null;
+      chunks.push(chunk.subarray(0, count));
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(Buffer.concat(chunks, total).toString("utf8")); }
+    catch { return null; }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const entry = parsed as Record<string, unknown>;
+    if (typeof entry.storeFingerprint !== "string" || !FINGERPRINT_PATTERN.test(entry.storeFingerprint)
+        || typeof entry.handleFingerprint !== "string"
+        || !FINGERPRINT_PATTERN.test(entry.handleFingerprint)) return null;
+    const rawAudit = entry.audit as Record<string, unknown> | undefined;
+    const handleCount = Number(rawAudit?.handleCount);
+    if (!Number.isInteger(handleCount)) return null;
+    let audit: ContactAudit;
+    try { audit = normalizeContactAudit(entry.audit, handleCount); }
+    catch { return null; }
+    return { storeFingerprint: entry.storeFingerprint, handleFingerprint: entry.handleFingerprint, audit };
+  } finally {
+    if (fileFd >= 0) closeSync(fileFd);
+    if (directoryFd >= 0) closeSync(directoryFd);
+  }
+}
+
+export function writeAuditCache(entry: AuditCacheEntry, path = auditCachePath()): void {
+  const serialized = `${JSON.stringify(entry)}
+`;
+  if (Buffer.byteLength(serialized) > MAX_AUDIT_CACHE_BYTES)
+    throw new Error("audit cache entry is too large");
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const directoryFd = openPinnedDirectory(dirname(path), true);
+  const name = basename(path);
+  const tempName = `.${name}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  const tempPath = pinnedPath(directoryFd, tempName);
+  let tempFd = -1;
+  let renamed = false;
+  try {
+    tempFd = openSync(
+      tempPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    const bytes = Buffer.from(serialized, "utf8");
+    let offset = 0;
+    while (offset < bytes.length) offset += writeSync(tempFd, bytes, offset, bytes.length - offset);
+    fchmodSync(tempFd, 0o600);
+    fsyncSync(tempFd);
+    closeSync(tempFd);
+    tempFd = -1;
+    renameSync(tempPath, pinnedPath(directoryFd, name));
+    renamed = true;
+  } finally {
+    if (tempFd >= 0) closeSync(tempFd);
+    if (!renamed) { try { unlinkSync(tempPath); } catch { /* no temporary file */ } }
+    closeSync(directoryFd);
+  }
+}
+
+export function auditContactsOnMac(
+  value: unknown, runner: Runner = spawnSync,
+): { audit: ContactAudit; cached: boolean } {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CONTACT_AUDIT_HANDLES)
     throw new Error("contact audit handle list is invalid");
   const seen = new Set<string>();
@@ -679,6 +797,23 @@ export function auditContactsOnMac(value: unknown, runner: Runner = spawnSync): 
     seen.add(key);
     return handle;
   });
+  // Freshness short-circuit: when the conversation set matches the cached
+  // scan, one cheap fingerprint round-trip decides whether the Mac's
+  // Contacts stores changed at all â unchanged means the cached cleanup
+  // results are still exact, so skip the full scan.
+  const handleFingerprint = handleSetFingerprint(handles);
+  let cache: AuditCacheEntry | null = null;
+  try { cache = readAuditCache(); } catch { cache = null; }
+  if (cache && cache.handleFingerprint === handleFingerprint) {
+    try {
+      if (storeFingerprintOnMac(runner) === cache.storeFingerprint) {
+        const requested = new Set(handles.map(identityKey));
+        const entries = [...cache.audit.singleCards, ...cache.audit.duplicates, ...cache.audit.conflicts];
+        if (entries.every((entry) => requested.has(identityKey(entry.handle))))
+          return { audit: cache.audit, cached: true };
+      }
+    } catch { /* fingerprint unavailable â fall through to a full scan */ }
+  }
   const home = process.env.HOME ?? homedir();
   const result: SpawnSyncReturns<string> = runner(
     join(home, "bin", "contacts"),
@@ -708,7 +843,11 @@ export function auditContactsOnMac(value: unknown, runner: Runner = spawnSync): 
     if (!requestedKeys.has(identityKey(entry.handle)))
       throw new Error("Contacts returned an unrequested audited handle");
   }
-  return audit;
+  if (typeof body.fingerprint === "string" && FINGERPRINT_PATTERN.test(body.fingerprint)) {
+    try { writeAuditCache({ storeFingerprint: body.fingerprint, handleFingerprint, audit }); }
+    catch { /* caching is best-effort */ }
+  }
+  return { audit, cached: false };
 }
 
 type Runner = typeof spawnSync;
@@ -963,6 +1102,15 @@ export function contactMutationOnMac(
     action = "consolidate";
     request.targetToken = normalizeContactToken(input.targetToken);
     request.card = normalizeContactDraft(input.card);
+    // Explicit cross-name merge: the second owner token widens the scope to
+    // both people's cards; it must be a distinct, valid token.
+    if (input.otherOwnerToken !== undefined && input.otherOwnerToken !== null
+        && input.otherOwnerToken !== "") {
+      const otherOwnerToken = normalizeContactToken(input.otherOwnerToken);
+      if (otherOwnerToken === ownerToken)
+        throw new Error("the other person must be a different candidate");
+      request.otherOwnerToken = otherOwnerToken;
+    }
     if (!Array.isArray(input.revisions) || input.revisions.length < 2
         || input.revisions.length > MAX_COMPARE_CARDS)
       throw new Error("contact revision list is invalid");
@@ -1106,6 +1254,7 @@ export function resolveOnMac(
   runner: Runner = spawnSync,
   ownerToken: unknown = undefined,
   expectedAction: unknown = undefined,
+  otherOwnerToken: unknown = undefined,
 ): {
   handle?: string;
   candidates?: IdentityCandidate[];
@@ -1133,6 +1282,13 @@ export function resolveOnMac(
     request.token = normalizeContactToken(token);
   if (operation === "compare" || operation === "link-prepare" || operation === "link")
     request.ownerToken = normalizeContactToken(token);
+  if (operation === "compare" && otherOwnerToken !== undefined && otherOwnerToken !== null
+      && otherOwnerToken !== "") {
+    const normalizedOther = normalizeContactToken(otherOwnerToken);
+    if (normalizedOther === request.ownerToken)
+      throw new Error("the other person must be a different candidate");
+    request.otherOwnerToken = normalizedOther;
+  }
   const confirmedAction = operation === "link" ? normalizeExpectedLinkAction(expectedAction) : "";
   if (operation === "link") request.expectedAction = confirmedAction;
   if (operation === "inspect" || operation === "remove") {
@@ -1337,8 +1493,8 @@ async function main(): Promise<void> {
       return;
     }
     if (operation === "audit") {
-      const audit = auditContactsOnMac(request.handles);
-      emit({ ok: true, audit });
+      const result = auditContactsOnMac(request.handles);
+      emit({ ok: true, audit: result.audit, cached: result.cached });
       return;
     }
     if (operation === "choose") {
@@ -1387,7 +1543,8 @@ async function main(): Promise<void> {
       if (operation !== "compare" && !contactWritesEnabled())
         throw new Error("contact writes are disabled; set contact_writes=on in bridge.conf");
       const result = resolveOnMac(
-        operation, request.handle, request.ownerToken, spawnSync, undefined, request.expectedAction,
+        operation, request.handle, request.ownerToken, spawnSync, undefined,
+        request.expectedAction, request.otherOwnerToken,
       );
       if (operation === "compare") emit({ ok: true, comparison: result.comparison });
       else if (operation === "link-prepare") emit({ ok: true, preview: result.linkPreview });
