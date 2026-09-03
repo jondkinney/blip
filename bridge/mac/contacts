@@ -63,6 +63,8 @@ MAX_REPAIR_FIELDS = 8
 MAX_AUDIT_HANDLES = 200
 MAX_REPAIR_INPUT_BYTES = 48 * 1024
 MAX_REPAIR_PROCESS_BYTES = 48 * 1024
+MAX_VCARD_BYTES = 2 * 1024 * 1024
+MAX_VCARD_RESPONSE_BYTES = 3 * 1024 * 1024
 MAX_UNDO_BYTES = 48 * 1024
 REPAIR_TIMEOUT_SECONDS = 25
 WRITE_GATE = os.path.expanduser("~/.blip/contact-writes-enabled")
@@ -411,9 +413,9 @@ def read_resolve_request() -> dict:
     return value
 
 
-def emit_resolve(value: dict) -> None:
+def emit_resolve(value: dict, maximum: int = MAX_RESOLVE_OUTPUT_BYTES) -> None:
     output = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if len(output.encode("utf-8")) > MAX_RESOLVE_OUTPUT_BYTES:
+    if len(output.encode("utf-8")) > maximum:
         raise RuntimeError("identity response exceeded its size contract")
     print(output)
 
@@ -450,6 +452,26 @@ def selected_candidate(handle: object, token: object) -> tuple[str, str, dict, l
     candidate = next((item for item in candidates if item["token"] == token_text), None)
     if candidate is None:
         raise ValueError("the selected contact is no longer a candidate")
+    records = sorted(
+        by_name[candidate["name"].casefold()],
+        key=lambda record: (-int(record["photo"]), -record["modified"], record["uid"]),
+    )
+    if len(records) != candidate["recordCount"]:
+        raise RuntimeError("Contacts returned inconsistent candidate cards")
+    return original, key, candidate, records
+
+
+def selected_candidate_from_unique_handle(
+    handle: object,
+) -> tuple[str, str, dict, list[dict]]:
+    """Resolve only when one person owns the handle; never guess for vCard export."""
+    original, candidates, by_name = contact_candidates(handle)
+    if not candidates:
+        raise ValueError("no Mac contact matches this conversation")
+    if len(candidates) != 1:
+        raise ValueError("more than one person matches this handle; use Edit contact to choose one")
+    _, key, _ = normalize_resolve_handle(original)
+    candidate = candidates[0]
     records = sorted(
         by_name[candidate["name"].casefold()],
         key=lambda record: (-int(record["photo"]), -record["modified"], record["uid"]),
@@ -591,7 +613,9 @@ def clear_undo_receipt(token: str) -> None:
         os.close(directory)
 
 
-def run_bounded_process(argv: list[str], payload: bytes) -> tuple[int, bytes, bytes]:
+def run_bounded_process(
+    argv: list[str], payload: bytes, output_limit: int = MAX_REPAIR_PROCESS_BYTES,
+) -> tuple[int, bytes, bytes]:
     """Drain both pipes incrementally, kill at either cap, and keep a total deadline."""
     process = subprocess.Popen(
         argv,
@@ -623,7 +647,7 @@ def run_bounded_process(argv: list[str], payload: bytes) -> tuple[int, bytes, by
                     continue
                 target = output[key.data]
                 target.extend(chunk)
-                if len(target) > MAX_REPAIR_PROCESS_BYTES:
+                if len(target) > output_limit:
                     process.kill()
                     raise RuntimeError("Contacts automation returned too much data")
         remaining = max(0.0, deadline - time.monotonic())
@@ -663,7 +687,9 @@ def run_contact_repair(request: dict) -> dict:
     return response
 
 
-def run_native_contact_mutation(request: dict) -> dict:
+def run_native_contact_mutation(
+    request: dict, output_limit: int = MAX_REPAIR_PROCESS_BYTES,
+) -> dict:
     helper = os.path.join(os.path.dirname(os.path.realpath(__file__)), "contact-delete")
     info = os.lstat(helper)
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
@@ -672,7 +698,7 @@ def run_native_contact_mutation(request: dict) -> dict:
     payload = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(payload) > MAX_REPAIR_INPUT_BYTES:
         raise RuntimeError("Contacts deletion request is too large")
-    code, stdout, stderr = run_bounded_process([helper], payload)
+    code, stdout, stderr = run_bounded_process([helper], payload, output_limit=output_limit)
     try:
         response = json.loads(stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -708,6 +734,56 @@ def run_contact_consolidation(target_uid: str, source_uids: list[str], draft: di
     if response.get("updated") is not True or response.get("deletedCount") != len(source_uids):
         raise RuntimeError("Contacts did not confirm the card consolidation")
     return response
+
+
+def merged_contact_draft(details: list[dict]) -> dict:
+    """Build one deterministic export card without mutating any source card."""
+    if not details:
+        raise RuntimeError("Contacts returned no card details")
+    result = card_draft(details[0])
+    scalar_keys = (
+        "firstName", "middleName", "lastName", "nickname", "organization",
+        "department", "jobTitle", "birthday",
+    )
+    for key in scalar_keys:
+        if result[key]:
+            continue
+        result[key] = next((detail[key] for detail in details if detail[key]), "")
+    # Notes are deliberately target-only, matching consolidation semantics.
+    for key in ("phones", "emails", "urls", "addresses"):
+        combined = []
+        seen = set()
+        for detail in details:
+            for item in detail[key]:
+                if key == "addresses":
+                    identity = tuple(str(item.get(field, "")).casefold() for field in (
+                        "street", "city", "state", "postalCode", "country", "countryCode",
+                    ))
+                else:
+                    identity = str(item.get("value", "")).casefold()
+                empty_identity = not any(identity) if isinstance(identity, tuple) else not identity
+                if empty_identity:
+                    continue
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                combined.append(item)
+        result[key] = combined
+    return validated_card_draft(result)
+
+
+def contact_vcard(handle: object) -> dict:
+    original, _, candidate, records = selected_candidate_from_unique_handle(handle)
+    details = describe_records(records)
+    draft = merged_contact_draft(details)
+    response = run_native_contact_mutation({
+        "operation": "vcard", "targetUid": records[0]["uid"], "card": draft,
+    }, MAX_VCARD_RESPONSE_BYTES)
+    encoded = response.get("vcard")
+    name = clean_text(response.get("name") or candidate["name"], MAX_NAME_CHARS)
+    if not isinstance(encoded, str) or not encoded or len(encoded) > MAX_VCARD_RESPONSE_BYTES:
+        raise RuntimeError("Contacts returned an invalid vCard")
+    return {"handle": original, "name": name, "vcard": encoded}
 
 
 def active_record_uids(records: list[dict]) -> set[str]:
@@ -1084,11 +1160,23 @@ def apply_consolidation(
             or result.get("sourceCount") != len(private["sources"])):
         raise RuntimeError("Contacts did not confirm the consolidation preflight")
     undo_token = write_undo_receipt({"action": "consolidate", **private})
-    run_contact_consolidation(
-        private["targetUid"],
-        [source["personUid"] for source in private["sources"]],
-        private["targetAfter"],
-    )
+    # Contacts can reject a native save request that updates one account and
+    # deletes from another. Commit and verify the survivor through the same
+    # Contacts.app path used by ordinary edits, then delete source cards only
+    # after that save succeeds. A failed update therefore cannot remove data.
+    updated = run_contact_repair({
+        "operation": "edit", "personUid": private["targetUid"],
+        "expectedCard": private["targetBefore"], "card": private["targetAfter"],
+    })
+    if updated.get("edited") is not True:
+        raise RuntimeError("Contacts did not confirm the merged iCloud card save")
+    updated_card = validated_card_detail(updated.get("card"))
+    if card_draft(updated_card) != private["targetAfter"]:
+        raise RuntimeError("Contacts changed the merged card while saving it")
+    # Delete each source independently. This avoids asking one CNSaveRequest
+    # to cross backing accounts; all deletion begins after survivor verification.
+    for source in private["sources"]:
+        run_contact_delete([source["personUid"]])
     after = validated_card_detail(describe_records([{"uid": private["targetUid"]}])[0])
     return {
         **preview, "applied": True, "undoToken": undo_token,
@@ -1328,6 +1416,18 @@ def undo_contact_removal(token: object) -> dict:
 def _cmd_resolve(args):
     request = read_resolve_request()
     operation = request.get("operation")
+    if operation == "discard-unsaved":
+        require_write_gate()
+        result = run_contact_repair({"operation": "discard-unsaved"})
+        discarded = result.get("discarded")
+        if not isinstance(discarded, bool):
+            raise RuntimeError("Contacts returned an invalid unsaved-change result")
+        emit_resolve({"ok": True, "discarded": discarded})
+        return
+    if operation == "vcard":
+        result = contact_vcard(request.get("handle"))
+        emit_resolve({"ok": True, **result}, MAX_VCARD_RESPONSE_BYTES)
+        return
     if operation == "candidates":
         original, candidates, _ = contact_candidates(request.get("handle"))
         emit_resolve({
@@ -1435,7 +1535,7 @@ def _cmd_resolve(args):
         emit_resolve({"ok": True, **result})
         return
     raise ValueError(
-        "operation must be candidates, audit, open, compare, edit-prepare, edit, delete-prepare, "
+        "operation must be discard-unsaved, vcard, candidates, audit, open, compare, edit-prepare, edit, delete-prepare, "
         "delete, merge-prepare, merge, link-prepare, link, inspect, remove, or undo"
     )
 

@@ -94,6 +94,12 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("fillColor: bubble.color");
     expect(panel).toContain("modelData.groupEnd === true && !bubbleRow.mine");
     expect(panel).toContain("modelData.linkOnly !== true");
+    expect(panel).toContain("id: tapbackPill");
+    expect(panel).toContain("font.pixelSize: root.fontSize(Style.font.heading)");
+    expect(panel).toContain("border.width: 0");
+    expect(panel).toContain("function opaqueOver(fill, background)");
+    expect(panel).toContain("id: tapbackTailLarge");
+    expect(panel).toContain("id: tapbackTailSmall");
     expect(panel).not.toContain("color: bubble.color\n                      anchors.bottom");
   });
 
@@ -113,6 +119,27 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("thread.pin_name || thread.name || thread.chat");
     expect(panel).not.toContain('text: "PINNED"');
     expect(panel).not.toContain('? "SEARCH" : "MESSAGES"');
+  });
+
+  test("conversation context menus expose message and per-person contact actions", () => {
+    expect(panel).toContain('text: "Copy message"');
+    expect(panel).toContain('title: copyAction ? "Copy vCard" : "Edit contact"');
+    expect(panel).toContain("id: directContactMenu");
+    expect(panel).toContain("id: groupContactMenu");
+    expect(panel).toContain("id: messageOnlyMenu");
+    expect(panel).not.toContain("id: contactContextMenu");
+    expect(panel).toContain("settingsView.editContact(person.handle)");
+    expect(settings).toContain("identitySettings.editContact(handle)");
+    expect(identitySettings).toContain("directEditorPending");
+    expect(identities).toContain('start("vcard", { handle: handle })');
+    expect(identityHelper).toContain('["--type", "x-special/gnome-copied-files"]');
+    expect(identityHelper).toContain('pathToFileURL(file.path).href');
+  });
+
+  test("chronological sidebar discussions use post-avatar separators", () => {
+    expect(panel).toContain("Messages separates chronological conversations");
+    expect(panel).toContain("avatarCircle.width + root.space(8)");
+    expect(panel).toContain("index < root.regularThreads.length - 1");
   });
 
   test("appearance previews real bubble corners and offers portable list time formatting", () => {
@@ -172,6 +199,13 @@ describe("QML safety invariants", () => {
     expect(identitySettings).not.toContain("Already saved in Blip\"");
     expect(identitySettings).not.toContain('label: "Use"');
     expect(identitySettings).not.toContain("Fix on Mac");
+  });
+
+  test("stale unsaved Contacts edits have an explicit two-step recovery", () => {
+    expect(identitySettings).toContain("Contacts is holding an unfinished in-memory edit.");
+    expect(identitySettings).toContain('? "Discard and close Contacts" : "Resolve pending edit…"');
+    expect(identitySettings).toContain("root.resolver.discardUnsavedContacts()");
+    expect(identities).toContain('start("discard-unsaved", {})');
   });
 
   test("contact cleanup scan is read-only triage, never a bulk merge", () => {

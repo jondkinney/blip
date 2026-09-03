@@ -22,6 +22,10 @@ ColumnLayout {
   property bool macReviewExpanded: false
   property bool namingExpanded: false
   property bool auditActionableOnly: false
+  property bool directContactPending: false
+  property bool directWorkspacePending: false
+  property bool directEditorPending: false
+  property bool discardUnsavedConfirm: false
   readonly property bool editorActive: customField.activeFocus
   readonly property bool reviewActive: resolver && resolver.activeHandle !== ""
   readonly property var savedChoices: resolver ? resolver.identities : []
@@ -45,6 +49,11 @@ ColumnLayout {
     && activeChoice.source === "contacts"
     && activeChoice.contactToken === selectedCandidate.token
     && activeChoice.name === selectedCandidate.name
+  readonly property bool unsavedContactsError:
+    String(resolver ? resolver.error : "").toLowerCase()
+      .indexOf("contacts has unsaved changes") >= 0
+
+  signal focusAreaRequested(real localY)
 
   spacing: space(10)
 
@@ -194,14 +203,20 @@ ColumnLayout {
     var sources = candidate.sourceCount === 1 ? "1 source" : candidate.sourceCount + " sources"
     return cards + " · " + sources + (candidate.hasPhoto ? " · has photo" : "")
   }
-  function beginReview(handle) {
+  function beginReview(handle, directEdit) {
     if (!resolver || resolver.loading) return
+    directContactPending = false
+    directWorkspacePending = false
+    directEditorPending = false
     var saved = choiceForHandle(handle)
     selectedToken = saved && saved.source === "contacts" ? saved.contactToken : ""
     customField.text = saved && saved.source === "custom" ? saved.name : ""
     namingExpanded = false
     macReviewExpanded = false
-    resolver.findCandidates(handle)
+    directContactPending = directEdit === true && resolver.findCandidates(handle)
+  }
+  function editContact(handle) {
+    beginReview(handle, true)
   }
   function openNamePreference() {
     if (!resolver || resolver.loading) return
@@ -230,6 +245,9 @@ ColumnLayout {
       customField.text = ""
       namingExpanded = false
       macReviewExpanded = false
+      directContactPending = false
+      directWorkspacePending = false
+      directEditorPending = false
     }
   }
   function selectCandidate(candidate) {
@@ -256,6 +274,25 @@ ColumnLayout {
     }
     function onCandidatesChanged() {
       var saved = root.activeChoice
+      if (root.directContactPending && root.resolver.currentOperation === "candidates") {
+        root.directContactPending = false
+        var directCandidate = saved && saved.source === "contacts"
+          ? root.candidateForToken(saved.contactToken) : null
+        if (!directCandidate && root.resolver.candidates.length === 1)
+          directCandidate = root.resolver.candidates[0]
+        root.namingExpanded = false
+        root.macReviewExpanded = true
+        if (directCandidate) {
+          root.selectedToken = directCandidate.token
+          root.directWorkspacePending = true
+          root.directEditorPending = directCandidate.recordCount === 1
+          Qt.callLater(root.openContactManagement)
+        } else {
+          root.selectedToken = ""
+          Qt.callLater(function() { root.focusAreaRequested(root.space(96)) })
+        }
+        return
+      }
       if (saved && saved.source === "contacts"
           && root.candidateForToken(saved.contactToken)) {
         root.selectedToken = saved.contactToken
@@ -264,6 +301,16 @@ ColumnLayout {
       if (root.selectedToken !== "" && root.candidateForToken(root.selectedToken)) return
       root.selectedToken = root.resolver.candidates.length === 1
         ? root.resolver.candidates[0].token : ""
+    }
+    function onComparisonChanged() {
+      if (!root.directWorkspacePending || !root.resolver.comparison) return
+      root.directWorkspacePending = false
+      if (root.directEditorPending && root.resolver.comparison.cards.length === 1)
+        contactWorkspace.editCard(root.resolver.comparison.cards[0])
+      root.directEditorPending = false
+      Qt.callLater(function() {
+        root.focusAreaRequested(contactWorkspace.mapToItem(root, 0, 0).y)
+      })
     }
   }
 
@@ -1143,6 +1190,7 @@ ColumnLayout {
       }
 
       ContactCardCompare {
+        id: contactWorkspace
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.comparison !== null
           && root.resolver.comparison.ownerToken === root.selectedToken
@@ -1317,6 +1365,71 @@ ColumnLayout {
     color: root.resolver && root.resolver.error !== "" ? root.urgent : Qt.darker(root.foreground, 1.4)
     font.family: root.fontFamily
     font.pixelSize: root.fontSize(Style.font.caption)
+  }
+
+  Rectangle {
+    Layout.fillWidth: true
+    implicitHeight: unsavedRecovery.implicitHeight + root.space(20)
+    visible: root.unsavedContactsError
+    radius: root.corner(root.space(8))
+    color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.07)
+    border.width: 1
+    border.color: Qt.rgba(root.urgent.r, root.urgent.g, root.urgent.b, 0.55)
+
+    ColumnLayout {
+      id: unsavedRecovery
+      anchors.fill: parent
+      anchors.margins: root.space(10)
+      spacing: root.space(8)
+
+      Text {
+        Layout.fillWidth: true
+        text: root.discardUnsavedConfirm
+          ? "Discard every pending change currently open in Contacts on the Mac?"
+          : "Contacts is holding an unfinished in-memory edit."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.bodySmall)
+        font.bold: true
+      }
+      Text {
+        Layout.fillWidth: true
+        text: root.discardUnsavedConfirm
+          ? "This closes Contacts without saving. Continue only if the pending edit is the failed Blip attempt; any separate edit you made directly on the Mac would also be discarded."
+          : "Finish or discard a real edit in Contacts on the Mac. If this was left by Blip’s failed save, Blip can close Contacts without saving it after one more confirmation."
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+      }
+      RowLayout {
+        Layout.fillWidth: true
+        Item { Layout.fillWidth: true }
+        SmallButton {
+          visible: root.discardUnsavedConfirm
+          label: "Cancel"
+          onClicked: root.discardUnsavedConfirm = false
+        }
+        SmallButton {
+          danger: root.discardUnsavedConfirm
+          primary: !root.discardUnsavedConfirm
+          label: root.discardUnsavedConfirm
+            ? "Discard and close Contacts" : "Resolve pending edit…"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: {
+            if (!root.discardUnsavedConfirm) {
+              root.discardUnsavedConfirm = true
+              return
+            }
+            root.discardUnsavedConfirm = false
+            root.resolver.discardUnsavedContacts()
+          }
+        }
+      }
+    }
   }
 
   Text {

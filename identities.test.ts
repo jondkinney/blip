@@ -18,6 +18,7 @@ import {
   auditContactsOnMac,
   contactWritesEnabled,
   contactMutationOnMac,
+  copyContactVCard,
   identityKey,
   identityNameFor,
   MAX_BRIDGE_CONFIG_BYTES,
@@ -342,6 +343,54 @@ describe("Mac candidate boundary", () => {
     expect(JSON.parse(capturedInput)).toEqual({
       operation: "open", handle: "+15550100001", token: exactToken,
     });
+  });
+
+  test("vCard export stays on stdin and copies a real owner-only .vcf file", () => {
+    let bridgeInput = "";
+    let clipboardInput = Buffer.alloc(0);
+    const runtime = fixture().root;
+    const card = Buffer.from(
+      "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Alex Rivera\r\nEND:VCARD\r\n",
+      "utf8",
+    );
+    const runner = ((_command: string, args: string[], options: any) => {
+      expect(args).toEqual(["--json", "resolve"]);
+      bridgeInput = options.input;
+      return { status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+        stdout: JSON.stringify({ ok: true, name: "Alex Rivera", vcard: card.toString("base64") }) };
+    }) as any;
+    const clipboard = ((_command: string, args: string[], options: any) => {
+      expect(args).toEqual(["--type", "x-special/gnome-copied-files"]);
+      clipboardInput = Buffer.from(options.input);
+      return { status: 0, signal: null, output: [], pid: 2,
+        stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), error: undefined };
+    }) as any;
+    expect(copyContactVCard("+15550100001", runner, clipboard, runtime)).toEqual({
+      handle: "+15550100001", name: "Alex Rivera", bytes: card.length,
+      fileName: "Alex Rivera.vcf",
+    });
+    expect(JSON.parse(bridgeInput)).toEqual({
+      operation: "vcard", handle: "+15550100001",
+    });
+    const clipboardPayload = clipboardInput.toString("utf8");
+    expect(clipboardPayload).toStartWith("copy\nfile://");
+    expect(clipboardPayload).toEndWith("/Alex%20Rivera.vcf\n");
+    const copiedPath = decodeURIComponent(new URL(clipboardPayload.split("\n")[1]).pathname);
+    expect(readFileSync(copiedPath)).toEqual(card);
+    expect(lstatSync(copiedPath).mode & 0o077).toBe(0);
+  });
+
+  test("discard-unsaved sends no contact identifier and validates the result", () => {
+    let bridgeInput = "";
+    const runner = ((_command: string, args: string[], options: any) => {
+      expect(args).toEqual(["--json", "resolve"]);
+      bridgeInput = options.input;
+      return { status: 0, signal: null, output: [], pid: 1, stderr: "", error: undefined,
+        stdout: JSON.stringify({ ok: true, discarded: true }) };
+    }) as any;
+    expect(resolveOnMac("discard-unsaved", undefined, undefined, runner))
+      .toEqual({ discarded: true });
+    expect(JSON.parse(bridgeInput)).toEqual({ operation: "discard-unsaved" });
   });
 
   test("validates repair previews and rejects inconsistent metadata", () => {

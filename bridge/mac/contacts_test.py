@@ -254,6 +254,21 @@ class ContactResolverTests(unittest.TestCase):
                 contacts._cmd_resolve(None)
         run.assert_not_called()
 
+    def test_discard_unsaved_requires_gate_and_reports_only_confirmation(self):
+        with mock.patch.object(
+            contacts, "read_resolve_request",
+            return_value={"operation": "discard-unsaved"},
+        ), mock.patch.object(contacts, "require_write_gate") as gate, mock.patch.object(
+            contacts, "run_contact_repair",
+            return_value={"ok": True, "discarded": True},
+        ) as repair:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                contacts._cmd_resolve(None)
+        gate.assert_called_once_with()
+        repair.assert_called_once_with({"operation": "discard-unsaved"})
+        self.assertEqual(json.loads(output.getvalue()), {"ok": True, "discarded": True})
+
     def test_write_gate_requires_an_owner_only_regular_file(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(
             contacts, "WRITE_GATE", os.path.join(root, "gate")
@@ -597,22 +612,62 @@ class ContactResolverTests(unittest.TestCase):
             side_effect=lambda value: events.append("receipt") or "undo:" + "e" * 32,
         ), mock.patch.object(
             contacts, "run_contact_repair",
-            side_effect=lambda value: events.append("preflight") or {
-                "ok": True, "readyToConsolidate": True, "sourceCount": 1,
-            },
+            side_effect=lambda value: events.append(value["operation"]) or (
+                {"ok": True, "readyToConsolidate": True, "sourceCount": 1}
+                if value["operation"] == "consolidate"
+                else {"ok": True, "edited": True, "card": after}
+            ),
         ), mock.patch.object(
-            contacts, "run_contact_consolidation",
-            side_effect=lambda *value: events.append("consolidate") or {
-                "ok": True, "updated": True, "deletedCount": 1,
+            contacts, "run_contact_delete",
+            side_effect=lambda value: events.append("delete") or {
+                "ok": True, "deletedCount": len(value),
             },
-        ) as consolidate:
+        ) as delete:
             result = contacts.apply_consolidation(
                 "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
                 [], draft, plan,
             )
-        self.assertEqual(events, ["preflight", "receipt", "consolidate"])
-        consolidate.assert_called_once_with("person-1", ["person-2"], draft)
+        self.assertEqual(events, ["consolidate", "receipt", "edit", "delete"])
+        delete.assert_called_once_with(["person-2"])
         self.assertTrue(result["applied"])
+
+    def test_consolidation_never_deletes_a_source_when_survivor_save_fails(self):
+        before = {
+            "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+            "lastName": "Rivera", "nickname": "", "organization": "",
+            "department": "", "jobTitle": "", "birthday": "", "note": "",
+            "phones": [], "emails": [], "urls": [], "addresses": [],
+        }
+        draft = contacts.card_draft(before)
+        plan = "sha256:" + "d" * 64
+        preview = {
+            "action": "consolidate", "handle": "+15550100001", "name": "Alex Rivera",
+            "cardNumber": 1, "cardCount": 2, "accountNumber": 1, "sourceName": "iCloud",
+            "sourceCardCount": 1, "changedFields": ["source-card consolidation"],
+            "planHash": plan, "writeEnabled": True,
+        }
+        private = {
+            "targetUid": "person-1", "targetBefore": before, "targetAfter": draft,
+            "sources": [{"personUid": "person-2", "card": before}],
+            "handle": "+15550100001", "name": "Alex Rivera", "planHash": plan,
+        }
+        with mock.patch.object(contacts, "require_write_gate"), mock.patch.object(
+            contacts, "prepare_consolidation", return_value=(preview, private),
+        ), mock.patch.object(
+            contacts, "write_undo_receipt", return_value="undo:" + "e" * 32,
+        ), mock.patch.object(
+            contacts, "run_contact_repair",
+            side_effect=[
+                {"ok": True, "readyToConsolidate": True, "sourceCount": 1},
+                {"ok": False, "edited": False},
+            ],
+        ), mock.patch.object(contacts, "run_contact_delete") as delete:
+            with self.assertRaisesRegex(RuntimeError, "merged iCloud card save"):
+                contacts.apply_consolidation(
+                    "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
+                    [], draft, plan,
+                )
+        delete.assert_not_called()
 
 
 if __name__ == "__main__":

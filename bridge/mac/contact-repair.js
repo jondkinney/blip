@@ -52,8 +52,10 @@ function normalizeRequest(value) {
     || value.operation === "undo" || value.operation === "edit"
     || value.operation === "delete" || value.operation === "restore"
     || value.operation === "consolidate" || value.operation === "undo-consolidate"
+    || value.operation === "discard-unsaved"
     ? value.operation : "";
   if (!operation) throw new Error("repair operation is invalid");
+  if (operation === "discard-unsaved") return { operation: operation };
   if (operation === "available") {
     if (!Array.isArray(value.personUids) || value.personUids.length < 1
         || value.personUids.length > MAX_PERSON_IDS)
@@ -350,7 +352,11 @@ function sameCard(person, expected) {
 function removeAll(contacts, person, property) {
   const entries = person[property]();
   for (let i = entries.length - 1; i >= 0; i--)
-    contacts.remove(person[property].at(i), { from: person });
+    contacts.remove(entries[i], { from: person });
+}
+
+function sameCollection(actual, desired) {
+  return JSON.stringify(actual) === JSON.stringify(desired);
 }
 
 function birthdayDate(value) {
@@ -383,19 +389,31 @@ function setCard(contacts, person, card) {
     cardStep(property, function() { person[property].set(card[property]); });
   }
   cardStep("birthday", function() { person.birthDate.set(birthdayDate(card.birthday)); });
-  cardStep("phone numbers", function() { removeAll(contacts, person, "phones"); });
-  cardStep("email addresses", function() { removeAll(contacts, person, "emails"); });
-  cardStep("websites", function() { removeAll(contacts, person, "urls"); });
-  cardStep("postal addresses", function() { removeAll(contacts, person, "addresses"); });
-  for (let i = 0; i < card.phones.length; i++) {
+  // Preserve collection objects (and their stable field ids) when an edit
+  // changes only a scalar such as middle name. When replacement is needed,
+  // remove the concrete specifiers returned by Contacts; calling `.at()` on
+  // the property function produces a malformed Apple event on current macOS.
+  const phonesChanged = !sameCollection(labeledValues(person, "phones", "phone"), card.phones);
+  const emailsChanged = !sameCollection(labeledValues(person, "emails", "email"), card.emails);
+  const urlsChanged = !sameCollection(labeledValues(person, "urls", "URL"), card.urls);
+  const addressesChanged = !sameCollection(addressValues(person), card.addresses);
+  if (phonesChanged)
+    cardStep("phone numbers", function() { removeAll(contacts, person, "phones"); });
+  if (emailsChanged)
+    cardStep("email addresses", function() { removeAll(contacts, person, "emails"); });
+  if (urlsChanged)
+    cardStep("websites", function() { removeAll(contacts, person, "urls"); });
+  if (addressesChanged)
+    cardStep("postal addresses", function() { removeAll(contacts, person, "addresses"); });
+  for (let i = 0; phonesChanged && i < card.phones.length; i++) {
     const field = card.phones[i];
     cardStep("phone number " + String(i + 1), function() { addField(contacts, person, "phone", field); });
   }
-  for (let i = 0; i < card.emails.length; i++) {
+  for (let i = 0; emailsChanged && i < card.emails.length; i++) {
     const field = card.emails[i];
     cardStep("email address " + String(i + 1), function() { addField(contacts, person, "email", field); });
   }
-  for (let i = 0; i < card.urls.length; i++) {
+  for (let i = 0; urlsChanged && i < card.urls.length; i++) {
     const field = card.urls[i];
     cardStep("website " + String(i + 1), function() {
       const properties = { value: field.value };
@@ -403,7 +421,7 @@ function setCard(contacts, person, card) {
       contacts.add(contacts.Url(properties), { to: person });
     });
   }
-  for (let i = 0; i < card.addresses.length; i++) {
+  for (let i = 0; addressesChanged && i < card.addresses.length; i++) {
     const source = card.addresses[i];
     cardStep("postal address " + String(i + 1), function() {
       const properties = { street: source.street, city: source.city, state: source.state,
@@ -454,6 +472,14 @@ function perform(request) {
     return { ok: true, available: available };
   }
   const Contacts = Application("Contacts");
+  if (request.operation === "discard-unsaved") {
+    if (!Contacts.running() || !Contacts.unsaved())
+      return { ok: true, discarded: false };
+    // This is reachable only from Blip's explicit destructive confirmation.
+    // `saving: "no"` closes Contacts without committing its in-memory edit.
+    Contacts.quit({ saving: "no" });
+    return { ok: true, discarded: true };
+  }
   if (request.operation === "describe") {
     const cards = request.personUids.map(function(uid) {
       return describePerson(peopleForId(Contacts, uid));

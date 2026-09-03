@@ -125,7 +125,9 @@ Linux side. If the Mac is asleep, the widget dims and says so.
 - **link cards** — URL messages show the preview image, title, and host, like Messages. Apple only decorates some links; for the rest Blip fetches the page's own Open Graph card itself, so a bare URL still gets its picture. Click opens the link, **right-click opens the share sheet** (open · copy · QR for your phone · send to a device via LocalSend, Omarchy's share). `link_previews=off` in `bridge.conf` disables the fetching
 - **photos render inline** — images ≤5MB auto-fetch over SSH (HEIC converted on the Mac); click opens full-size. PDFs/videos are chips — click fetches and opens them
 - **send files** — Ctrl+V an image into the compose box, type `/attach <path>`, or drag-and-drop; a caption rides along
-- select text and Ctrl+C · right-click a bubble to copy it whole · right-click a **link** in a bubble for the share sheet
+- select text and Ctrl+C · right-click a bubble or conversation for **Copy
+  message**, **Copy vCard**, or **Edit contact**; group chats list each person;
+  right-click a **link** in a bubble for the share sheet
 - the share sheet **opens itself** for a link you send, and for one that arrives while Blip is open
 - compose box at the bottom, Enter sends — **DMs and groups**
 
