@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 import Quickshell
 import Quickshell.Io
 import QtQuick.Effects
@@ -67,6 +68,14 @@ FocusScope {
     var blue = fill.b * alpha + Color.background.b * (1 - alpha)
     return (0.299 * red + 0.587 * green + 0.114 * blue) > 0.35 ? "#1a1a1a" : "#ffffff"
   }
+  function richMessageHtml(html, linkColor) {
+    var color = String(linkColor || "").toLowerCase()
+    if (!/^#[0-9a-f]{6}$/.test(color)) color = "#ffffff"
+    return String(html || "").replace(
+      /<a href=/g,
+      '<a style="color: ' + color + '; text-decoration: underline;" href='
+    )
+  }
 
   readonly property color mineFill: outgoingColorSetting === "theme" ? accent : outgoingColorSetting
   // Bubble text picks black/white by which CONTRASTS better with the fill:
@@ -112,6 +121,7 @@ FocusScope {
   // The cache under ~/.cache/blip/att is global, so results never go stale on
   // a thread switch — no ownership tracking needed, unlike thread loads.
   property var attFiles: ({})
+  property var attMetrics: ({})
   property var fetchQueue: []
   property string fetchingId: ""
   // Compose draft attachment (one per message in v1).
@@ -759,6 +769,15 @@ FocusScope {
           var m = Object.assign({}, root.attFiles)
           m[id] = d.ok === true ? String(d.url || "") : ""
           root.attFiles = m
+          var ratio = Number(d.pixelRatio)
+          var pixelWidth = Number(d.pixelWidth)
+          var pixelHeight = Number(d.pixelHeight)
+          if (!isFinite(ratio) || ratio < 1 || ratio > 4) ratio = 1
+          if (!isFinite(pixelWidth) || pixelWidth < 1 || pixelWidth > 100000) pixelWidth = 0
+          if (!isFinite(pixelHeight) || pixelHeight < 1 || pixelHeight > 100000) pixelHeight = 0
+          var metrics = Object.assign({}, root.attMetrics)
+          metrics[id] = { pixelRatio: ratio, pixelWidth: pixelWidth, pixelHeight: pixelHeight }
+          root.attMetrics = metrics
           if (d.ok === true && root.fetchJobOpen) {
             if (root.openableMime(root.fetchJobMime)) {
               openProc.command = ["xdg-open", String(d.url || "")]
@@ -1678,6 +1697,7 @@ FocusScope {
                     readonly property string attId: String(modelData.id || "")
                     // undefined = not fetched, "" = failed, else file:// url
                     readonly property var fileUrl: root.attFiles[chipRow.attId]
+                    readonly property var imageMetrics: root.attMetrics[chipRow.attId] || ({})
                     readonly property bool failed: chipRow.fileUrl === ""
                     readonly property bool showImage:
                       root.isImageMime(chipRow.modelData.mime) &&
@@ -1691,7 +1711,23 @@ FocusScope {
                     Image {
                       id: attImage
                       visible: chipRow.showImage
-                      readonly property real maxW: Math.round(content.width * 0.6)
+                      // A phone screenshot can be thousands of source pixels
+                      // wide. Size media in logical UI units so a wide desktop
+                      // window (especially on a 2× display) does not turn it
+                      // into a nearly full-width wall.
+                      readonly property real maxW: Math.min(
+                        Math.round(content.width * 0.6), root.space(380)
+                      )
+                      readonly property real pixelRatio:
+                        Number(chipRow.imageMetrics.pixelRatio || 1)
+                      readonly property real naturalWidth:
+                        Number(chipRow.imageMetrics.pixelWidth || 0) > 0
+                          ? Number(chipRow.imageMetrics.pixelWidth) / pixelRatio
+                          : implicitWidth
+                      readonly property real naturalHeight:
+                        Number(chipRow.imageMetrics.pixelHeight || 0) > 0
+                          ? Number(chipRow.imageMetrics.pixelHeight) / pixelRatio
+                          : implicitHeight
                       source: chipRow.showImage ? chipRow.fileUrl : ""
                       asynchronous: true
                       fillMode: Image.PreserveAspectFit
@@ -1707,9 +1743,9 @@ FocusScope {
                         m[chipRow.attId] = ""
                         root.attFiles = m
                       }
-                      Layout.preferredWidth: status === Image.Ready ? Math.min(maxW, implicitWidth) : maxW
-                      Layout.preferredHeight: status === Image.Ready && implicitWidth > 0
-                        ? Layout.preferredWidth * implicitHeight / implicitWidth
+                      Layout.preferredWidth: status === Image.Ready ? Math.min(maxW, naturalWidth) : maxW
+                      Layout.preferredHeight: status === Image.Ready && naturalWidth > 0
+                        ? Layout.preferredWidth * naturalHeight / naturalWidth
                         : root.space(120)
                       HoverHandler { cursorShape: Qt.PointingHandCursor }
                       TapHandler { onTapped: root.openAttachment(chipRow.modelData) }
@@ -1854,23 +1890,63 @@ FocusScope {
 
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
 
-                  Rectangle {
+                  Item {
                     id: bubble
                     readonly property real maxInner: Math.round(content.width * 0.78) - root.space(22)
+                    readonly property real bubbleRadius: root.corner(root.space(16))
+                    readonly property color color: bubbleRow.mine ? root.mineFill : root.theirsFill
                     Layout.preferredWidth: Math.ceil(bubbleText.contentWidth) + root.space(22)
                     Layout.preferredHeight: Math.ceil(bubbleText.contentHeight) + root.space(14)
-                    radius: root.corner(root.space(16))
-                    color: bubbleRow.mine ? root.mineFill : root.theirsFill
 
-                    // iMessage squares off the corner nearest the sender on the
-                    // last bubble of a run — the "tail" without drawing a tail.
-                    Rectangle {
-                      visible: modelData.groupEnd === true
-                      width: root.space(16); height: root.space(16)
-                      color: bubble.color
-                      anchors.bottom: parent.bottom
-                      anchors.right: bubbleRow.mine ? parent.right : undefined
-                      anchors.left: bubbleRow.mine ? undefined : parent.left
+                    // One path draws the rounded bubble and its squared sender
+                    // corner. The old translucent Rectangle + overlapping
+                    // corner Rectangle composited twice and made that corner
+                    // visibly darker on incoming bubbles.
+                    Shape {
+                      anchors.fill: parent
+                      antialiasing: true
+                      ShapePath {
+                        id: bubblePath
+                        readonly property real r: Math.min(
+                          bubble.bubbleRadius, bubble.width / 2, bubble.height / 2
+                        )
+                        readonly property bool squareRight:
+                          modelData.groupEnd === true && bubbleRow.mine
+                        readonly property bool squareLeft:
+                          modelData.groupEnd === true && !bubbleRow.mine
+                        strokeColor: "transparent"
+                        fillColor: bubble.color
+                        startX: r
+                        startY: 0
+                        PathLine { x: bubble.width - bubblePath.r; y: 0 }
+                        PathQuad {
+                          x: bubble.width; y: bubblePath.r
+                          controlX: bubble.width; controlY: 0
+                        }
+                        PathLine {
+                          x: bubble.width
+                          y: bubblePath.squareRight ? bubble.height : bubble.height - bubblePath.r
+                        }
+                        PathQuad {
+                          x: bubblePath.squareRight ? bubble.width : bubble.width - bubblePath.r
+                          y: bubble.height
+                          controlX: bubble.width; controlY: bubble.height
+                        }
+                        PathLine {
+                          x: bubblePath.squareLeft ? 0 : bubblePath.r
+                          y: bubble.height
+                        }
+                        PathQuad {
+                          x: 0
+                          y: bubblePath.squareLeft ? bubble.height : bubble.height - bubblePath.r
+                          controlX: 0; controlY: bubble.height
+                        }
+                        PathLine { x: 0; y: bubblePath.r }
+                        PathQuad {
+                          x: bubblePath.r; y: 0
+                          controlX: 0; controlY: 0
+                        }
+                      }
                     }
 
                     // TextEdit, not Text: read-only but selectable, so a message
@@ -1882,7 +1958,12 @@ FocusScope {
                       // html is pre-escaped + linkified in thread.ts (tested);
                       // plain messages keep the cheap PlainText path.
                       readonly property bool hasLink: String(modelData.html || "") !== ""
-                      text: hasLink ? String(modelData.html) : String(modelData.text || "")
+                      text: hasLink
+                        ? root.richMessageHtml(
+                            modelData.html,
+                            bubbleRow.mine ? root.mineText : root.theirsText
+                          )
+                        : String(modelData.text || "")
                       textFormat: hasLink ? TextEdit.RichText : TextEdit.PlainText
                       onLinkActivated: function(link) {
                         openProc.command = ["xdg-open", link]
