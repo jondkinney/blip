@@ -33,16 +33,17 @@ ColumnLayout {
     || preferences.hideShortCodeConversations
   readonly property var unresolvedWithShortCodes: unresolvedThreads(threads, true)
   readonly property var reviewableConversations: unresolvedThreads(threads, false)
+  readonly property var auditableConversations: auditableThreads(threads)
   readonly property var visibleConversations: hideShortCodeConversations
     ? reviewableConversations : unresolvedWithShortCodes
   readonly property var currentAudit: resolver && resolver.audit
-    && resolver.audit.handleCount === reviewableConversations.length
+    && resolver.audit.handleCount === auditableConversations.length
     && resolver.auditFingerprint === reviewFingerprint() ? resolver.audit : null
   readonly property var unresolved: auditActionableOnly && currentAudit
     ? actionableConversations(reviewableConversations) : visibleConversations
   readonly property int hiddenShortCodeCount: shortCodeCount(unresolvedWithShortCodes)
-  readonly property int auditActionableCount: currentAudit
-    ? currentAudit.singleCards.length + currentAudit.duplicates.length + currentAudit.conflicts.length : 0
+  readonly property int unresolvedAuditActionableCount: currentAudit
+    ? actionableConversations(reviewableConversations).length : 0
   readonly property var selectedCandidate: candidateForToken(selectedToken)
   readonly property var activeChoice: choiceForHandle(resolver ? resolver.activeHandle : "")
   readonly property bool selectedChoiceIsSaved: selectedCandidate && activeChoice
@@ -121,14 +122,14 @@ ColumnLayout {
   }
   function reviewHandles() {
     var result = []
-    for (var i = 0; i < reviewableConversations.length; i++)
-      result.push(String(reviewableConversations[i].chat || ""))
+    for (var i = 0; i < auditableConversations.length; i++)
+      result.push(String(auditableConversations[i].handle || auditableConversations[i].chat || ""))
     return result
   }
   function reviewFingerprint() {
     var keys = []
-    for (var i = 0; i < reviewableConversations.length; i++)
-      keys.push(handleKey(reviewableConversations[i].chat || ""))
+    for (var i = 0; i < auditableConversations.length; i++)
+      keys.push(handleKey(auditableConversations[i].handle || auditableConversations[i].chat || ""))
     keys.sort()
     return JSON.stringify(keys)
   }
@@ -173,6 +174,23 @@ ColumnLayout {
       if (ap !== bp) return ap - bp
       return String(a.last_ts || "") < String(b.last_ts || "") ? 1 : -1
     })
+    return result
+  }
+  function auditableThreads(value) {
+    if (!Array.isArray(value)) return []
+    var seen = ({})
+    var result = []
+    for (var i = 0; i < value.length; i++) {
+      var thread = value[i]
+      if (!thread) continue
+      var chat = String(thread.chat || "")
+      var handle = String(thread.handle || chat)
+      if (!directHandle(chat) || likelyServiceHandle(handle)) continue
+      var key = handleKey(handle)
+      if (seen[key]) continue
+      seen[key] = true
+      result.push(thread)
+    }
     return result
   }
   function shortCodeCount(value) {
@@ -479,7 +497,7 @@ ColumnLayout {
 
   Rectangle {
     Layout.fillWidth: true
-    visible: root.reviewableConversations.length > 0
+    visible: root.auditableConversations.length > 0
     implicitHeight: auditContent.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
@@ -504,7 +522,7 @@ ColumnLayout {
         }
         SmallButton {
           label: root.currentAudit ? "Scan again" : root.resolver && root.resolver.currentOperation === "audit"
-            ? "Scanning…" : "Scan " + root.reviewableConversations.length + " conversations"
+            ? "Scanning…" : "Scan " + root.auditableConversations.length + " conversations"
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.resolver.auditContacts(root.reviewHandles())
         }
@@ -513,7 +531,7 @@ ColumnLayout {
         Layout.fillWidth: true
         text: root.currentAudit
           ? "Read-only scan complete. Account names and matching fields are evidence, not permission to merge. Every contact change still opens its own preview and confirmation."
-          : "Run a read-only Mac Contacts scan to separate unmatched numbers, existing cards, likely duplicate cards, and handles assigned to conflicting names. The scan changes nothing."
+          : "Run a read-only Mac Contacts scan to separate unmatched numbers, existing cards, likely duplicate cards, and handles assigned to conflicting names. Named conversations are included, so duplicates remain visible after Contacts supplies a display name. The scan changes nothing."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.3)
@@ -573,11 +591,11 @@ ColumnLayout {
         visible: root.currentAudit !== null
         Item { Layout.fillWidth: true }
         SmallButton {
-          visible: root.auditActionableCount > 0
+          visible: root.unresolvedAuditActionableCount > 0
           primary: root.auditActionableOnly
           label: root.auditActionableOnly
             ? "Show all " + root.reviewableConversations.length
-            : "Focus on " + root.auditActionableCount + " Contacts matches"
+            : "Focus on " + root.unresolvedAuditActionableCount + " Contacts matches"
           onClicked: root.auditActionableOnly = !root.auditActionableOnly
         }
       }

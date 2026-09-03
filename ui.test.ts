@@ -203,6 +203,9 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Hide short-code senders");
     expect(identitySettings).not.toContain(".slice(0, 12)");
     expect(identitySettings).toContain("phone/email conversations to review");
+    expect(identitySettings).toContain("readonly property var auditableConversations: auditableThreads(threads)");
+    expect(identitySettings).toContain("resolver.audit.handleCount === auditableConversations.length");
+    expect(identitySettings).toContain("Named conversations are included");
     expect(identitySettings).toContain("preferences.hideShortCodeConversations");
     expect(identitySettings).toContain('preferences.setBoolean("hideShortCodeConversations", value)');
     expect(settings).toContain("preferences: root.preferences");
