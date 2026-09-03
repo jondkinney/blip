@@ -9,6 +9,11 @@ ColumnLayout {
 
   property var resolver: null
   property var comparison: null
+  // Cross-name merge: the user explicitly combined two named candidates.
+  // The scope is merge-only — per-card edit/delete and linking keep
+  // single-person authority.
+  readonly property bool crossMerge: comparison !== null
+    && String(comparison.otherOwnerToken || "") !== ""
   property color foreground: Color.foreground
   property color urgent: Color.urgent
   property color accent: Color.accent
@@ -365,6 +370,7 @@ ColumnLayout {
               font.pixelSize: root.fontSize(Style.font.caption)
             }
             SmallButton {
+              visible: !root.crossMerge
               label: "Edit in Blip…"
               primary: true
               enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
@@ -426,16 +432,74 @@ ColumnLayout {
   }
 
   ActionHeader {
-    visible: root.editorCard === null
+    // With a single card there is nothing to consolidate â hide the section
+    // instead of presenting a preview with no action.
+    visible: root.editorCard === null && root.comparison !== null
+      && root.comparison.cardCount > 1
     Layout.topMargin: root.space(20)
     title: "Consolidate into one card"
-    detail: root.incompleteCardCount(root.comparison) === 0
-      ? "Choose this option to build one editable card and delete the other source cards after confirmation."
-      : "Choose this option to fill blanks, combine unique values, and delete the other source cards after review."
+    detail: root.crossMerge
+      ? "You marked these differently-named cards as the same person. Pick the card that should survive — the name (and every other field) can be adjusted in the review before anything is saved."
+      : root.incompleteCardCount(root.comparison) === 0
+        ? "Choose this option to build one editable card and delete the other source cards after confirmation."
+        : "Choose this option to fill blanks, combine unique values, and delete the other source cards after review."
+  }
+
+  Rectangle {
+    // Single card, but another NAME uses this handle: point at the one real
+    // path to a merge (make the names match) instead of a dead end.
+    visible: root.editorCard === null && root.comparison !== null
+      && root.comparison.cardCount === 1
+      && root.resolver && root.resolver.candidates.length > 1
+    Layout.topMargin: root.space(20)
+    Layout.fillWidth: true
+    implicitHeight: samePersonHint.implicitHeight + root.space(24)
+    radius: root.corner(root.space(10))
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+    border.width: 1
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.22)
+
+    ColumnLayout {
+      id: samePersonHint
+      anchors.fill: parent
+      anchors.margins: root.space(12)
+      spacing: root.space(6)
+      Text {
+        Layout.fillWidth: true
+        text: "SAME PERSON UNDER ANOTHER NAME?"
+        textFormat: Text.PlainText
+        color: root.accent
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+        font.bold: true
+      }
+      Text {
+        Layout.fillWidth: true
+        text: {
+          var others = []
+          var cands = root.resolver ? root.resolver.candidates : []
+          for (var i = 0; i < cands.length; i++) {
+            if (!root.comparison || cands[i].token !== root.comparison.ownerToken)
+              others.push("“" + String(cands[i].name || "") + "”")
+          }
+          return "This person has only one card, so there is nothing to consolidate. If "
+            + (others.length > 0 ? others.join(" or ") : "the other name")
+            + " is really the same person — a married-name change, say — go back and use "
+            + "Merge with… on that person’s row. You can adjust the surviving name "
+            + "during the merge review."
+        }
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        color: Qt.darker(root.foreground, 1.3)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+      }
+    }
   }
 
   Rectangle {
     visible: root.editorCard === null && root.comparison !== null
+      && root.comparison.cardCount > 1
     Layout.fillWidth: true
     implicitHeight: combinedContents.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))
@@ -533,6 +597,7 @@ ColumnLayout {
 
   ActionHeader {
     visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
+      && !root.crossMerge
     Layout.topMargin: root.space(20)
     title: "Or link cards · optional"
     detail: "An alternative to consolidation: keep both source cards and ask Contacts to present them as one person. Checking makes no changes."
@@ -540,6 +605,7 @@ ColumnLayout {
 
   Rectangle {
     visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
+      && !root.crossMerge
     Layout.fillWidth: true
     implicitHeight: linkContents.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))

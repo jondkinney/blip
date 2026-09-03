@@ -34,6 +34,68 @@ ColumnLayout {
   readonly property var unresolvedWithShortCodes: unresolvedThreads(threads, true)
   readonly property var reviewableConversations: unresolvedThreads(threads, false)
   readonly property var auditableConversations: auditableThreads(threads)
+
+  // Previous results stay on screen during a re-scan, visibly grayed out
+  // until the fresh ones land. A first scan has nothing stale to dim.
+  readonly property bool staleWhileScanning:
+    resolver ? resolver.auditRunning === true && currentAudit !== null : false
+
+  // Animated three-dot progress while a scan is in flight. The dots are
+  // space-padded so the monospace label keeps one width and the button
+  // never jitters.
+  property int scanDotPhase: 0
+  readonly property string animatedDots: [".  ", ".. ", "..."][scanDotPhase]
+  Timer {
+    running: root.resolver
+      ? root.resolver.auditRunning === true || root.resolver.loading === true
+      : false
+    interval: 400
+    repeat: true
+    onTriggered: root.scanDotPhase = (root.scanDotPhase + 1) % 3
+  }
+
+  // A Contacts mutation makes a finished cleanup scan stale. The scan has
+  // its own dedicated process, so the quiet re-run starts IMMEDIATELY after
+  // the mutation; the list page shows the in-flight state and keeps the
+  // previous results visible until the fresh ones land. If a scan is
+  // already running when another mutation lands, the timer retries until
+  // the worker frees up.
+  Timer {
+    id: auditRefreshTimer
+    interval: 1000
+    repeat: true
+    property int attempts: 0
+    onTriggered: {
+      attempts += 1
+      if (attempts > 90 || !root.resolver) { running = false; return }
+      if (root.resolver.auditContacts(root.reviewHandles(), true)) running = false
+    }
+  }
+  Connections {
+    target: root.resolver
+    function onContactsMutated() {
+      if (root.resolver && root.resolver.audit && root.auditableConversations.length > 0) {
+        auditRefreshTimer.attempts = 0
+        auditRefreshTimer.running = true
+        auditRefreshTimer.triggered()
+      }
+    }
+  }
+
+  // Load the cleanup results as soon as the contacts page opens: with the
+  // fingerprint cache this is one cheap round-trip when nothing changed on
+  // the Mac, and a quiet background scan (own process, spinner shown) when
+  // something did.
+  property bool autoAuditStarted: false
+  function maybeAutoAudit() {
+    if (autoAuditStarted || !visible || !resolver) return
+    if (resolver.audit || resolver.auditRunning) return
+    if (auditableConversations.length === 0) return
+    autoAuditStarted = true
+    resolver.auditContacts(reviewHandles(), true)
+  }
+  onVisibleChanged: maybeAutoAudit()
+  onAuditableConversationsChanged: maybeAutoAudit()
   readonly property var visibleConversations: hideShortCodeConversations
     ? reviewableConversations : unresolvedWithShortCodes
   readonly property var currentAudit: resolver && resolver.audit
@@ -64,6 +126,10 @@ ColumnLayout {
   function directHandle(value) {
     var handle = String(value || "")
     return /^\+?[0-9]{5,}$/.test(handle) || /^[^@\s]+@[^@\s]+$/.test(handle)
+  }
+  // "handle" is Blip-internal vocabulary; the UI says number/email.
+  function handleNoun() {
+    return String(resolver ? resolver.activeHandle : "").indexOf("@") >= 0 ? "email" : "number"
   }
   function handleKey(value) {
     var handle = String(value || "")
@@ -458,7 +524,7 @@ ColumnLayout {
         spacing: root.space(8)
         Text {
           Layout.fillWidth: true
-          text: "FIND CONTACTS CLEANUP OPPORTUNITIES"
+          text: "FIND CONTACT CLEANUP OPPORTUNITIES"
           textFormat: Text.PlainText
           color: root.currentAudit ? root.accent : root.foreground
           font.family: root.fontFamily
@@ -466,9 +532,11 @@ ColumnLayout {
           font.bold: true
         }
         SmallButton {
-          label: root.currentAudit ? "Scan again" : root.resolver && root.resolver.currentOperation === "audit"
-            ? "Scanning…" : "Scan " + root.auditableConversations.length + " conversations"
-          enabled: root.resolver && !root.resolver.loading
+          label: root.resolver && root.resolver.auditRunning
+            ? "Scanning" + root.animatedDots
+            : root.currentAudit ? "Scan again"
+            : "Scan " + root.auditableConversations.length + " conversations"
+          enabled: root.resolver && !root.resolver.auditRunning
           onClicked: root.resolver.auditContacts(root.reviewHandles())
         }
       }
@@ -486,6 +554,8 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.currentAudit !== null
+        opacity: root.staleWhileScanning ? 0.45 : 1
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         text: root.currentAudit
           ? root.currentAudit.noMatchCount + " no matching card · "
             + root.currentAudit.singleCards.length + " single-card matches · "
@@ -501,15 +571,29 @@ ColumnLayout {
       }
       Repeater {
         model: root.currentAudit ? root.currentAudit.duplicates : []
-        AuditResultRow { required property var modelData; entry: modelData; kind: "duplicate" }
+        AuditResultRow {
+          required property var modelData
+          entry: modelData
+          kind: "duplicate"
+          opacity: root.staleWhileScanning ? 0.45 : 1
+          Behavior on opacity { NumberAnimation { duration: 180 } }
+        }
       }
       Repeater {
         model: root.currentAudit ? root.currentAudit.conflicts : []
-        AuditResultRow { required property var modelData; entry: modelData; kind: "conflict" }
+        AuditResultRow {
+          required property var modelData
+          entry: modelData
+          kind: "conflict"
+          opacity: root.staleWhileScanning ? 0.45 : 1
+          Behavior on opacity { NumberAnimation { duration: 180 } }
+        }
       }
       Text {
         Layout.fillWidth: true
         visible: root.currentAudit && root.currentAudit.singleCards.length > 0
+        opacity: root.staleWhileScanning ? 0.45 : 1
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         text: root.currentAudit
           ? root.currentAudit.singleCards.length + " conversations already have one matching card. They are not duplicates."
           : ""
@@ -522,6 +606,8 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.currentAudit && root.currentAudit.noMatchCount > 0
+        opacity: root.staleWhileScanning ? 0.45 : 1
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         text: root.currentAudit
           ? root.currentAudit.noMatchCount + " conversations have no matching card. Blip recommends no bulk write for them."
           : ""
@@ -599,6 +685,8 @@ ColumnLayout {
         + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
           ? " looks like a short-code/service sender."
           : " look like short-code/service senders.")
+    opacity: root.staleWhileScanning ? 0.45 : 1
+    Behavior on opacity { NumberAnimation { duration: 180 } }
     textFormat: Text.PlainText
     color: Qt.darker(root.foreground, 1.4)
     font.family: root.fontFamily
@@ -610,6 +698,8 @@ ColumnLayout {
     delegate: Rectangle {
       required property var modelData
       Layout.fillWidth: true
+      opacity: root.staleWhileScanning ? 0.45 : 1
+      Behavior on opacity { NumberAnimation { duration: 180 } }
       implicitHeight: unresolvedRow.implicitHeight + root.space(22)
       radius: root.corner(root.space(9))
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
@@ -724,16 +814,22 @@ ColumnLayout {
       }
 
       GridLayout {
+        id: taskGrid
         Layout.fillWidth: true
         visible: !root.namingExpanded && !root.macReviewExpanded
         columns: width >= root.space(760) ? 2 : 1
         rowSpacing: root.space(12)
         columnSpacing: root.space(12)
+        // Side by side, both cards take the taller card's height so the pair
+        // reads as one row; stacked, each keeps its own.
+        readonly property real pairHeight:
+          Math.max(manageTask.implicitHeight, namingTask.implicitHeight)
 
         Rectangle {
           Layout.fillWidth: true
           Layout.alignment: Qt.AlignTop
-          implicitHeight: manageTask.implicitHeight + root.space(24)
+          implicitHeight: (taskGrid.columns === 2
+            ? taskGrid.pairHeight : manageTask.implicitHeight) + root.space(24)
           radius: root.corner(root.space(10))
           color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.1)
           border.width: 1
@@ -761,8 +857,9 @@ ColumnLayout {
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.bodySmall)
             }
+            Item { Layout.fillHeight: true }
             SmallButton {
-              Layout.alignment: Qt.AlignLeft
+              Layout.alignment: Qt.AlignRight
               primary: true
               label: root.selectedCandidate && root.selectedCandidate.recordCount > 1
                 ? "Manage " + root.selectedCandidate.recordCount + " source cards…"
@@ -777,7 +874,8 @@ ColumnLayout {
         Rectangle {
           Layout.fillWidth: true
           Layout.alignment: Qt.AlignTop
-          implicitHeight: namingTask.implicitHeight + root.space(24)
+          implicitHeight: (taskGrid.columns === 2
+            ? taskGrid.pairHeight : namingTask.implicitHeight) + root.space(24)
           radius: root.corner(root.space(10))
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
           border.width: 1
@@ -807,8 +905,9 @@ ColumnLayout {
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.bodySmall)
             }
+            Item { Layout.fillHeight: true }
             SmallButton {
-              Layout.alignment: Qt.AlignLeft
+              Layout.alignment: Qt.AlignRight
               label: root.activeChoice ? "Change display preference…" : "Choose display name…"
               enabled: root.resolver && !root.resolver.loading
               onClicked: root.openNamePreference()
@@ -1066,7 +1165,7 @@ ColumnLayout {
         Layout.fillWidth: true
         visible: root.macReviewExpanded
         text: root.resolver && root.resolver.candidates.length > 1
-          ? root.resolver.candidates.length + " people use this handle. Select the person whose cards you want to manage for this session. Nothing is saved as a Blip name."
+          ? root.resolver.candidates.length + " different people are named for this " + root.handleNoun() + " in Contacts. Pick who this conversation belongs to — from there you can merge the cards or remove the " + root.handleNoun() + " from the wrong one."
           : root.selectedCandidate && root.selectedCandidate.recordCount > 1
             ? root.selectedCandidate.recordCount + " source cards found. Compare, edit, consolidate, delete, or link them from Blip."
             : "One source card found. You can review, edit, or delete it from Blip."
@@ -1085,7 +1184,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate === null
-        text: "Select a person below for this contact-management session. This selection is not written to identities.json."
+        text: "Pick a person below. That only opens their cards for review — it is temporary, never saved, and changes nothing in Contacts."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: root.urgent
@@ -1128,8 +1227,10 @@ ColumnLayout {
               spacing: root.space(8)
               Text {
                 Layout.fillWidth: true
-                text: (sourceCandidate.intended ? "SELECTED FOR THIS SESSION: "
-                  : root.selectedCandidate ? "OTHER PERSON USING THIS HANDLE: " : "POSSIBLE PERSON: ")
+                text: (sourceCandidate.intended ? "WORKING ON: "
+                  : root.selectedCandidate
+                    ? "OTHER PERSON USING THIS " + root.handleNoun().toUpperCase() + ": "
+                    : "POSSIBLE PERSON: ")
                   + String(sourceCandidate.modelData.name || "")
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
@@ -1140,7 +1241,17 @@ ColumnLayout {
                 font.bold: true
               }
               SmallButton {
-                label: !sourceCandidate.intended ? "Select for this session"
+                // Explicit same-person declaration: opens the standard
+                // compare/merge workspace spanning BOTH people's cards.
+                visible: !sourceCandidate.intended && root.selectedCandidate !== null
+                  && root.resolver && root.resolver.contactWrites
+                label: "Merge with " + (root.selectedCandidate ? root.selectedCandidate.name : "") + "…"
+                enabled: root.resolver && !root.resolver.loading
+                onClicked: root.resolver.compareCards(
+                  root.resolver.activeHandle, root.selectedToken, sourceCandidate.modelData.token)
+              }
+              SmallButton {
+                label: !sourceCandidate.intended ? "Work on this person…"
                   : root.resolver && root.resolver.comparison
                   && root.resolver.comparison.ownerToken === sourceCandidate.modelData.token
                   ? "Contact workspace open"
@@ -1167,10 +1278,10 @@ ColumnLayout {
             Text {
               Layout.fillWidth: true
               text: sourceCandidate.intended
-                ? "These cards are selected only for this session. Manage them without creating a Blip naming preference."
+                ? "You’re reviewing this person’s cards temporarily — nothing is saved as a Blip name, and every Mac Contacts change asks for its own confirmation."
                 : root.selectedCandidate
-                  ? "If this is a different person, you can remove only this phone number or email after a separate confirmation."
-                  : "Select this person to compare and manage their source cards."
+                  ? "A different person? Remove just this " + root.handleNoun() + " from their card. The same person under another name (a married-name change, say)? Merge the cards — you can adjust the surviving name during the review."
+                  : "Opens their cards for review — from there you can edit them, merge duplicates, or remove this " + root.handleNoun() + " from the wrong card."
               textFormat: Text.PlainText
               wrapMode: Text.WordWrap
               color: Qt.darker(root.foreground, 1.4)
@@ -1210,7 +1321,7 @@ ColumnLayout {
                   visible: !sourceCandidate.intended && root.selectedCandidate !== null
                     && root.resolver && root.resolver.contactWrites
                   danger: true
-                  label: "Remove this handle…"
+                  label: "Remove this " + root.handleNoun() + "…"
                   enabled: root.resolver && !root.resolver.loading
                   onClicked: root.resolver.inspectOnMac(
                     root.resolver.activeHandle, sourceCard.modelData.token, root.selectedToken)
@@ -1316,7 +1427,13 @@ ColumnLayout {
 
       Rectangle {
         Layout.fillWidth: true
+        // The undo offer belongs to the contact it changed — one merge's
+        // receipt must not follow the user into another person's workspace.
+        // The token stays in memory, so returning to that contact within the
+        // session re-offers it (the private Mac receipt outlives both).
         visible: root.resolver && /^undo:[0-9a-f]{32}$/.test(root.resolver.undoToken)
+          && root.handleKey(root.resolver.undoHandle)
+             === root.handleKey(root.resolver.activeHandle)
         implicitHeight: undoContents.implicitHeight + root.space(18)
         radius: root.corner(root.space(9))
         color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
@@ -1383,7 +1500,13 @@ ColumnLayout {
   Text {
     Layout.fillWidth: true
     visible: root.resolver && (root.resolver.error !== "" || root.resolver.notice !== "")
-    text: root.resolver && root.resolver.error !== "" ? root.resolver.error : String(root.resolver ? root.resolver.notice : "")
+    // While an operation runs ("Consolidating the verified source cards…"),
+    // the notice's ellipsis animates as a three-dot progress indicator.
+    text: root.resolver && root.resolver.error !== ""
+      ? root.resolver.error
+      : root.resolver && root.resolver.loading
+        ? String(root.resolver.notice).replace(/…$/, "") + root.animatedDots
+        : String(root.resolver ? root.resolver.notice : "")
     textFormat: Text.PlainText
     wrapMode: Text.WordWrap
     color: root.resolver && root.resolver.error !== "" ? root.urgent : Qt.darker(root.foreground, 1.4)

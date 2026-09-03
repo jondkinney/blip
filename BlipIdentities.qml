@@ -26,6 +26,9 @@ Item {
   property var mutationPreview: null
   property var mutationRequest: null
   property string comparisonOwnerToken: ""
+  // Set only for an explicit cross-name merge (two candidates the user
+  // identified as the same person); "" for the normal single-person scope.
+  property string comparisonOtherOwnerToken: ""
   property string activeHandle: ""
   property bool contactWrites: false
   property string pendingRepairToken: ""
@@ -47,6 +50,11 @@ Item {
   property string pendingReviewHandle: ""
   property bool refreshCandidatesAfterExit: false
   property int pendingAuditCount: 0
+  property bool quietAudit: false
+  // The cleanup scan runs on its own dedicated process (auditWorker) so a
+  // long scan can start the moment a mutation lands without contending with
+  // navigation, edits, or merges on the interactive worker.
+  property bool auditRunning: false
   property string pendingAuditFingerprint: ""
   property string auditFingerprint: ""
   property bool vcardReported: false
@@ -55,6 +63,10 @@ Item {
   property string pendingVcardFileName: ""
 
   signal choicesChanged()
+  // Fired after any operation that changed Mac Contacts (edit, delete,
+  // merge, link, field removal, undo) so listeners can refresh derived
+  // views like the cleanup scan.
+  signal contactsMutated()
   signal vcardFinished(string message, bool success)
 
   function safeText(value, maximum) {
@@ -307,7 +319,8 @@ Item {
     }
     if (Object.keys(accounts).length !== sourceCount) return null
     return { handle: handle, name: name, cardCount: cardCount, sourceCount: sourceCount,
-      writeEnabled: value.writeEnabled === true, cards: cards, ownerToken: comparisonOwnerToken }
+      writeEnabled: value.writeEnabled === true, cards: cards, ownerToken: comparisonOwnerToken,
+      otherOwnerToken: comparisonOtherOwnerToken }
   }
 
 
@@ -418,13 +431,19 @@ Item {
     mutationPreview = null
     mutationRequest = null
     comparisonOwnerToken = ""
+    comparisonOtherOwnerToken = ""
     pendingRepairToken = ""
     pendingOwnerToken = ""
     notice = "Checking matching cards on the Mac…"
     return start("candidates", { handle: activeHandle }, false)
   }
 
-  function auditContacts(handles) {
+  // quiet = an automatic freshness re-scan after a contact mutation: it must
+  // not clobber the mutation's own success notice. Previous results stay
+  // visible (stale) while the fresh scan runs; auditRunning drives the UI's
+  // in-progress state.
+  function auditContacts(handles, quiet) {
+    if (auditWorker.running) return false
     if (!Array.isArray(handles) || handles.length < 1 || handles.length > 200) return false
     var accepted = []
     var seen = ({})
@@ -435,16 +454,36 @@ Item {
       seen[key] = true
       accepted.push(handle)
     }
-    audit = null
+    quietAudit = quiet === true
     pendingAuditCount = accepted.length
     pendingAuditFingerprint = JSON.stringify(Object.keys(seen).sort())
-    auditFingerprint = ""
-    notice = "Scanning matching Contacts cards; nothing will be changed…"
-    return start("audit", { handles: accepted }, false)
+    if (!quietAudit) notice = "Scanning matching Contacts cards; nothing will be changed…"
+    auditWorker.payload = JSON.stringify({ handles: accepted })
+    auditWorker.stdinEnabled = true
+    auditWorker.command = ["bun", helperPath, "audit"]
+    auditRunning = true
+    auditWorker.running = true
+    return true
+  }
+
+  function consumeAudit(text) {
+    auditRunning = false
+    var result = null
+    try { result = JSON.parse(text) } catch (e) { result = null }
+    var audited = result && result.ok === true ? safeAudit(result.audit) : null
+    if (!audited) {
+      if (!quietAudit) error = "Identity helper returned an invalid contact audit"
+      return
+    }
+    audit = audited
+    auditFingerprint = pendingAuditFingerprint
+    if (!quietAudit) notice = result.cached === true
+      ? "Cleanup results are current — Contacts hasn't changed since the last scan"
+      : "Contact cleanup scan finished; nothing was changed"
   }
 
   function clearAudit() {
-    if (worker.running) return false
+    if (auditWorker.running) return false
     audit = null
     pendingAuditCount = 0
     pendingAuditFingerprint = ""
@@ -462,6 +501,7 @@ Item {
     mutationPreview = null
     mutationRequest = null
     comparisonOwnerToken = ""
+    comparisonOtherOwnerToken = ""
     pendingRepairToken = ""
     pendingOwnerToken = ""
     error = ""
@@ -521,20 +561,29 @@ Item {
     }
   }
 
-  function compareCards(handle, ownerToken) {
+  function compareCards(handle, ownerToken, otherOwnerToken) {
     if (!validToken(ownerToken)) return false
+    var cross = otherOwnerToken !== undefined && otherOwnerToken !== null
+      && String(otherOwnerToken) !== ""
+    if (cross && (!validToken(otherOwnerToken) || otherOwnerToken === ownerToken)) return false
     comparison = null
     linkPreview = null
     mutationPreview = null
     mutationRequest = null
     comparisonOwnerToken = ownerToken
-    notice = "Loading the active card details from Contacts…"
-    return start("compare", { handle: handle, ownerToken: ownerToken })
+    comparisonOtherOwnerToken = cross ? String(otherOwnerToken) : ""
+    notice = cross
+      ? "Loading both people's card details from Contacts…"
+      : "Loading the active card details from Contacts…"
+    var payload = ({ handle: handle, ownerToken: ownerToken })
+    if (cross) payload.otherOwnerToken = String(otherOwnerToken)
+    return start("compare", payload)
   }
 
   function prepareCardEdit(card, draft) {
     if (!contactWrites || !comparison || !card || !validToken(card.token)
-        || !validRevision(card.revision) || !validToken(comparison.ownerToken)) return false
+        || !validRevision(card.revision) || !validToken(comparison.ownerToken)
+        || String(comparison.otherOwnerToken || "") !== "") return false
     mutationPreview = null
     mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
       token: card.token, revision: card.revision, card: draft }
@@ -544,7 +593,8 @@ Item {
 
   function prepareCardDelete(card) {
     if (!contactWrites || !comparison || !card || !validToken(card.token)
-        || !validRevision(card.revision) || !validToken(comparison.ownerToken)) return false
+        || !validRevision(card.revision) || !validToken(comparison.ownerToken)
+        || String(comparison.otherOwnerToken || "") !== "") return false
     mutationPreview = null
     mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
       token: card.token, revision: card.revision }
@@ -564,6 +614,8 @@ Item {
     mutationPreview = null
     mutationRequest = { handle: comparison.handle, ownerToken: comparison.ownerToken,
       targetToken: targetCard.token, revisions: revisions, card: draft }
+    if (String(comparison.otherOwnerToken || "") !== "")
+      mutationRequest.otherOwnerToken = comparison.otherOwnerToken
     notice = "Verifying the merged card and every source card on the Mac…"
     return start("merge-prepare", mutationRequest)
   }
@@ -629,6 +681,7 @@ Item {
     mutationPreview = null
     mutationRequest = null
     comparisonOwnerToken = ""
+    comparisonOtherOwnerToken = ""
     notice = candidates.length > 1 ? "Contacts has conflicting names" : "Contacts has one matching name"
     return true
   }
@@ -763,17 +816,6 @@ Item {
         : "Contacts had no pending edit to discard"
       return
     }
-    if (currentOperation === "audit") {
-      var audited = safeAudit(result.audit)
-      if (!audited) {
-        error = "Identity helper returned an invalid contact audit"
-        return
-      }
-      audit = audited
-      auditFingerprint = pendingAuditFingerprint
-      notice = "Contact cleanup scan finished; nothing was changed"
-      return
-    }
     if (currentOperation === "choose" || currentOperation === "custom") {
       var identity = safeIdentity(result.identity)
       if (!identity) { error = "Identity helper returned an invalid saved choice"; return }
@@ -858,12 +900,14 @@ Item {
       comparison = null
       linkPreview = null
       comparisonOwnerToken = ""
+    comparisonOtherOwnerToken = ""
       notice = appliedMutation.action === "edit"
         ? "Saved the contact card in Mac Contacts"
         : appliedMutation.action === "delete"
           ? "Deleted the source card from Mac Contacts"
           : "Consolidated " + undoCardCount + " source cards in Mac Contacts"
       refreshCandidatesAfterExit = true
+      contactsMutated()
       return
     }
     if (currentOperation === "link-prepare") {
@@ -890,7 +934,9 @@ Item {
       comparison = null
       linkPreview = null
       comparisonOwnerToken = ""
+    comparisonOtherOwnerToken = ""
       refreshCandidatesAfterExit = true
+      contactsMutated()
       return
     }
     if (currentOperation === "inspect") {
@@ -923,6 +969,7 @@ Item {
       pendingOwnerToken = ""
       notice = "Removed the verified " + removedPreview.kind + " from “" + removedPreview.name + "” on the Mac"
       refreshCandidatesAfterExit = true
+      contactsMutated()
       return
     }
     if (currentOperation === "undo") {
@@ -951,6 +998,7 @@ Item {
           : restoredAction === "consolidate" ? "Restored " + restoredCards + " pre-merge cards"
             : "Undid the contact change for “" + restoredName + "”"
       refreshCandidatesAfterExit = true
+      contactsMutated()
     }
   }
 
@@ -984,6 +1032,19 @@ Item {
         root.reloadAfterExit = false
         Qt.callLater(function() { root.load(true) })
       }
+    }
+  }
+
+  Process {
+    id: auditWorker
+    property string payload: ""
+    stdout: StdioCollector { onStreamFinished: root.consumeAudit(text) }
+    onStarted: {
+      if (payload !== "") write(payload)
+      stdinEnabled = false
+    }
+    onExited: function(code, status) {
+      root.auditRunning = false
     }
   }
 
