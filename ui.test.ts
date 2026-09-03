@@ -65,7 +65,9 @@ describe("QML safety invariants", () => {
 
   test("group rows and tiles show the GROUP's photo, never the last speaker's", () => {
     const bind = 'root.isGroupId(String(modelData.chat || "")) ? String(modelData.chat) : String(modelData.handle || modelData.chat || "")';
-    expect(panel.split(bind).length - 1).toBe(2);   // list row + pinned tile
+    expect(panel).toContain(bind);   // chronological row
+    expect(panel).toContain('root.isGroupId(String(thread.chat || ""))');   // pinned tile
+    expect(panel).toContain('? String(thread.chat)');
     expect(panel).not.toContain('if (!root.isGroupId(String(modelData.chat || ""))) root.requestAvatar(avatarHandle)');
     expect(panel).not.toContain('if (handle === "" || isGroupId(handle)) return');
   });
@@ -138,6 +140,7 @@ describe("QML safety invariants", () => {
   test("the sidebar header is compact and pinned labels use Messages names", () => {
     expect(panel).toContain('tooltipText: "Settings"');
     expect(panel).toContain("thread.pin_name || thread.name || thread.chat");
+    expect(panel.match(/id: pinnedGrid/g)).toHaveLength(1);
     expect(panel).not.toContain('text: "PINNED"');
     expect(panel).not.toContain('? "SEARCH" : "MESSAGES"');
   });

@@ -1498,110 +1498,6 @@ FocusScope {
               Keys.onEscapePressed: root.exitSearch()
             }
 
-            // Read-only mirror of Messages' pinned section. These tiles have
-            // no preview: the Mac owns pinning, while Blip only renders the
-            // ordered avatars and names above the ordinary conversation rows.
-            GridLayout {
-              id: pinnedGrid
-              Layout.fillWidth: true
-              visible: root.online && root.listShowing && !root.searchShowing && !root.newMode
-                       && root.pinnedThreads.length > 0
-              columns: 3
-              columnSpacing: Style.space(8)
-              rowSpacing: Style.space(10)
-              Layout.topMargin: Style.space(8)
-              Layout.bottomMargin: Style.space(8)
-
-              Repeater {
-                model: pinnedGrid.visible ? root.pinnedThreads : []
-                delegate: Rectangle {
-                  required property var modelData
-                  Layout.fillWidth: true
-                  Layout.preferredWidth: Math.max(1, (pinnedGrid.width - pinnedGrid.columnSpacing * 2) / 3)
-                  implicitHeight: pinnedColumn.implicitHeight + Style.space(4)
-                  radius: Style.cornerRadius
-                  // j/k walk root.threads, and pinned threads sort FIRST in it —
-                  // without this the cursor was invisible for those presses.
-                  color: pinnedHover.hovered || root.cursor === root.threadIndex(modelData)
-                    ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                    : "transparent"
-
-                  HoverHandler { id: pinnedHover }
-                  TapHandler { onTapped: root.openThread(modelData) }
-
-                  ColumnLayout {
-                    id: pinnedColumn
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    spacing: Style.space(4)
-
-                    Rectangle {
-                      id: pinnedAvatar
-                      Layout.alignment: Qt.AlignHCenter
-                      width: Math.min(88, Math.max(56,
-                        (pinnedGrid.width - pinnedGrid.columnSpacing * 2) / 3 * 0.62))
-                      height: width
-                      radius: width / 2
-                      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-                      readonly property string avatarHandle: root.isGroupId(String(modelData.chat || "")) ? String(modelData.chat) : String(modelData.handle || modelData.chat || "")
-                      Component.onCompleted: root.requestAvatar(avatarHandle)
-
-                      Image {
-                        id: pinnedAvatarImg
-                        anchors.fill: parent
-                        visible: false
-                        source: root.avatarFiles[pinnedAvatar.avatarHandle] || ""
-                        asynchronous: true
-                        fillMode: Image.PreserveAspectCrop
-                        autoTransform: true
-                        sourceSize.width: 192
-                        sourceSize.height: 192
-                        onStatusChanged: if (status === Image.Error && pinnedAvatar.avatarHandle !== "") {
-                          var m = Object.assign({}, root.avatarFiles); m[pinnedAvatar.avatarHandle] = ""; root.avatarFiles = m
-                        }
-                      }
-                      Item {
-                        id: pinnedAvatarMask
-                        anchors.fill: parent
-                        visible: false
-                        layer.enabled: true
-                        Rectangle { anchors.fill: parent; radius: width / 2 }
-                      }
-                      MultiEffect {
-                        anchors.fill: parent
-                        source: pinnedAvatarImg
-                        visible: pinnedAvatarImg.status === Image.Ready
-                        maskEnabled: true
-                        maskSource: pinnedAvatarMask
-                      }
-                      Text {
-                        anchors.centerIn: parent
-                        visible: pinnedAvatarImg.status !== Image.Ready
-                        text: root.avatarInitials(modelData)
-                        color: root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.body
-                        font.bold: true
-                      }
-                    }
-
-                    Text {
-                      Layout.fillWidth: true
-                      text: String(modelData.name || modelData.chat)
-                      textFormat: Text.PlainText
-                      horizontalAlignment: Text.AlignHCenter
-                      elide: Text.ElideRight
-                      color: root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: modelData.unread > 0
-                    }
-                  }
-                }
-              }
-            }
-
             Text {
               Layout.fillWidth: true
               visible: root.searching && root.searchNote !== ""
@@ -2853,7 +2749,9 @@ FocusScope {
     property bool selected: false
     readonly property int pinAvatarSize: Math.max(
       Math.round(Style.spaceReal(root.avatarSize) * 1.75), root.space(48))
-    readonly property string avatarHandle: String(thread.handle || thread.chat || "")
+    readonly property string avatarHandle: root.isGroupId(String(thread.chat || ""))
+      ? String(thread.chat)
+      : String(thread.handle || thread.chat || "")
     readonly property string displayName: String(thread.pin_name || thread.name || thread.chat || "")
 
     Rectangle {
@@ -2880,8 +2778,7 @@ FocusScope {
           height: width
           radius: width / 2
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-          Component.onCompleted: if (!root.isGroupId(String(pinTile.thread.chat || "")))
-            root.requestAvatar(pinTile.avatarHandle)
+          Component.onCompleted: root.requestAvatar(pinTile.avatarHandle)
 
           Image {
             id: pinAvatarImage
