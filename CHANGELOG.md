@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve the natural aspect ratio of tall link-preview artwork, allow cards
+  to grow beyond the old shallow banner cap, and render tapback reactions on
+  unfurled cards. Conversation headers now use Messages' pinned group title,
+  short emoji-only messages use the large bubble-free Messages treatment, and
+  incoming group-message runs show the sender's avatar beside their last item.
 - Add conversation/message context menus for contact work. Direct chats offer
   Copy vCard and Edit contact; groups expand those actions into named
   participant submenus. vCards are exported by macOS Contacts as real `.vcf`

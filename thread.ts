@@ -58,6 +58,8 @@ export interface Bubble {
   handle: string;
   name: string;
   text: string;
+  /** One to three emoji and no prose/media — rendered at Messages' expressive size. */
+  emojiOnly: boolean;
   /** Non-empty on the first message of a new calendar day: "Today", "Aug 28". */
   day: string;
   /** First bubble of a run by one sender — gets the rounded outer corner. */
@@ -146,6 +148,23 @@ export function standaloneUrl(text: string): boolean {
   return /^(?:https?:\/\/|www\.)[^\s<>"']+$/i.test(String(text ?? "").trim());
 }
 
+// A single user-perceived emoji can span several code points (skin tone,
+// variation selector, family ZWJ sequence, flag, or keycap). Segment by
+// grapheme first so those still count as one expressive glyph.
+const EMOJI_GRAPHEME = /^(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?(?:\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?(?:\p{Emoji_Modifier})?)*)$/u;
+
+/** Messages-style expressive text: one to three emoji, with no prose. */
+export function standaloneEmoji(text: string): boolean {
+  const compact = String(text ?? "").trim().replace(/\s+/gu, "");
+  if (!compact) return false;
+  const graphemes = Array.from(
+    new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(compact),
+    (part) => part.segment,
+  );
+  return graphemes.length >= 1 && graphemes.length <= 3 &&
+    graphemes.every((part) => EMOJI_GRAPHEME.test(part));
+}
+
 // ---------------------------------------------------------------- decoration
 
 /**
@@ -188,6 +207,9 @@ export function decorate(msgs: ImsgMessage[], today: string): Bubble[] {
       minutesBetween(m.ts, next.ts) > GROUP_GAP_MINUTES;
     const cleanText = (m.text ?? "").replace(/￼/g, "").trim();
     const link = normalizeLink(m.link);
+    const attachments = (m.attachments ?? []).filter(
+      (a) => !String(a.name || "").endsWith(".pluginPayloadAttachment"),
+    );
 
     out.push({
       ts: m.ts,
@@ -197,6 +219,7 @@ export function decorate(msgs: ImsgMessage[], today: string): Bubble[] {
       // U+FFFC is the object-replacement placeholder Messages leaves where an
       // attachment sat; the chip row carries that information instead.
       text: cleanText,
+      emojiOnly: link === null && attachments.length === 0 && standaloneEmoji(cleanText),
       day: newDay ? dayLabel(m.ts, today) : "",
       groupStart,
       groupEnd,
@@ -204,9 +227,7 @@ export function decorate(msgs: ImsgMessage[], today: string): Bubble[] {
       receipt: i === receiptIdx ? receiptLabel(m.read_at!, today) : "",
       tapbacks: m.tapbacks ?? [],
       // Belt to imsg 1.5.1's suspenders: link-preview payloads are not files.
-      attachments: (m.attachments ?? []).filter(
-        (a) => !String(a.name || "").endsWith(".pluginPayloadAttachment"),
-      ),
+      attachments,
       replyText: m.reply_to?.text ?? "",
       replyMine: m.reply_to?.from_me ?? false,
       edited: m.edited === true,

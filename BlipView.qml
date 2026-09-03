@@ -56,6 +56,10 @@ FocusScope {
   readonly property real density: preferences ? preferences.density : 1.0
   readonly property real cornerScale: preferences ? preferences.cornerScale : 1.0
   readonly property int avatarSize: preferences ? preferences.avatarSize : 30
+  readonly property int groupMessageAvatarSize: Math.max(
+    root.space(24), Math.round(Style.spaceReal(root.avatarSize) * 0.9)
+  )
+  readonly property int groupMessageAvatarSlot: groupMessageAvatarSize + root.space(8)
   readonly property string outgoingColorSetting: preferences ? preferences.outgoingBubbleColor : "theme"
   readonly property string incomingColorSetting: preferences ? preferences.incomingBubbleColor : "theme"
   function fontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
@@ -1618,7 +1622,11 @@ FocusScope {
           spacing: root.space(8)
           PanelHero {
             Layout.fillWidth: true
-            title: root.inThread ? String(root.active.name || root.active.chat) : "Select a conversation"
+            // Pinned group names are Messages' user-facing title. `name` can
+            // still be the opaque chatNNN id carried by message rows.
+            title: root.inThread
+              ? String(root.active.pin_name || root.active.name || root.active.chat)
+              : "Select a conversation"
             meta: root.inThread
               ? (root.activeIsGroup
                   ? (root.isSendable(root.active) ? "group" : "group · read-only (id unknown)")
@@ -1734,6 +1742,15 @@ FocusScope {
                 id: bubbleRow
                 required property var modelData
                 readonly property bool mine: modelData.from_me === true
+                readonly property bool incomingGroup: root.activeIsGroup && !mine
+                readonly property bool runEndsHere: incomingGroup && modelData.groupEnd === true
+                readonly property bool hasTextBubble:
+                  !modelData.retracted &&
+                  (String(modelData.text || "") !== "" || (modelData.attachments || []).length === 0) &&
+                  modelData.linkOnly !== true
+                readonly property bool hasLinkCard: !modelData.retracted && !!modelData.link
+                readonly property int attachmentCount:
+                  modelData.retracted ? 0 : (modelData.attachments || []).length
 
                 Layout.fillWidth: true
                 spacing: root.space(2)
@@ -1761,6 +1778,7 @@ FocusScope {
                 Text {
                   Layout.alignment: Qt.AlignLeft
                   Layout.leftMargin: root.space(10)
+                    + (bubbleRow.incomingGroup ? root.groupMessageAvatarSlot : 0)
                   Layout.topMargin: root.space(6)
                   visible: root.activeIsGroup && !bubbleRow.mine && modelData.groupStart === true
                   text: String(modelData.name || "")
@@ -1776,6 +1794,12 @@ FocusScope {
                   visible: modelData.retracted === true
                   spacing: 0
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
+                  GroupMessageAvatarSlot {
+                    reserve: bubbleRow.incomingGroup
+                    handle: String(modelData.handle || "")
+                    name: String(modelData.name || "")
+                    showAvatar: bubbleRow.runEndsHere
+                  }
                   Text {
                     text: (bubbleRow.mine ? "You" : String(modelData.name || "They")) + " unsent a message"
                     textFormat: Text.PlainText
@@ -1795,6 +1819,12 @@ FocusScope {
                   Layout.topMargin: modelData.groupStart ? root.space(6) : 0
                   spacing: 0
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
+                  GroupMessageAvatarSlot {
+                    reserve: bubbleRow.incomingGroup
+                    handle: String(modelData.handle || "")
+                    name: String(modelData.name || "")
+                    showAvatar: false
+                  }
                   Rectangle {
                     Layout.preferredWidth: Math.min(Math.ceil(replySnippet.implicitWidth) + root.space(18), Math.round(content.width * 0.7))
                     Layout.preferredHeight: Math.ceil(replySnippet.implicitHeight) + root.space(10)
@@ -1859,6 +1889,14 @@ FocusScope {
                     Layout.topMargin: index === 0 && bubbleRow.modelData.groupStart ? root.space(6) : 0
                     spacing: 0
                     Item { Layout.fillWidth: true; visible: bubbleRow.mine }
+                    GroupMessageAvatarSlot {
+                      reserve: bubbleRow.incomingGroup
+                      handle: String(bubbleRow.modelData.handle || "")
+                      name: String(bubbleRow.modelData.name || "")
+                      showAvatar: bubbleRow.runEndsHere &&
+                        !bubbleRow.hasTextBubble && !bubbleRow.hasLinkCard &&
+                        index === bubbleRow.attachmentCount - 1
+                    }
 
                     // fetched image renders inline, like Messages; click = full view
                     Image {
@@ -1939,7 +1977,9 @@ FocusScope {
                   id: linkRow
                   visible: !modelData.retracted && !!modelData.link
                   Layout.fillWidth: true
-                  Layout.topMargin: modelData.groupStart ? root.space(6) : 0
+                  Layout.topMargin: (modelData.groupStart ? root.space(6) : 0)
+                    + ((modelData.tapbacks || []).length > 0
+                      ? root.space(23) : 0)
                   spacing: 0
                   // same anchoring as the chips: a card image completing ABOVE
                   // the viewport must not shove the reader's position.
@@ -1954,76 +1994,99 @@ FocusScope {
                       flick.contentY = Math.max(0, flick.contentY + d)
                   }
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
-                  Rectangle {
-                    id: linkCard
-                    readonly property var link: modelData.link || ({})
-                    readonly property string imgUrl: link.image_id ? String(root.attFiles[String(link.image_id)] || "") : ""
+                  GroupMessageAvatarSlot {
+                    reserve: bubbleRow.incomingGroup
+                    handle: String(modelData.handle || "")
+                    name: String(modelData.name || "")
+                    showAvatar: bubbleRow.runEndsHere && !bubbleRow.hasTextBubble
+                  }
+                  Item {
+                    id: linkCardWrap
                     Layout.preferredWidth: Math.min(Math.round(content.width * 0.62), root.space(380))
-                    Layout.preferredHeight: linkCol.implicitHeight
-                    radius: root.corner(root.space(14))
-                    clip: true
-                    color: bubbleRow.mine ? root.mineFill : root.theirsFill
-                    ColumnLayout {
-                      id: linkCol
+                    Layout.preferredHeight: linkCard.height
+
+                    Rectangle {
+                      id: linkCard
                       width: parent.width
-                      spacing: 0
-                      Image {
-                        id: linkImage
-                        visible: linkCard.imgUrl !== "" && status === Image.Ready
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: visible && implicitWidth > 0
-                          ? Math.min(root.space(220), Math.round(linkCard.width * implicitHeight / implicitWidth))
-                          : 0
-                        source: linkCard.imgUrl
-                        asynchronous: true
-                        fillMode: Image.PreserveAspectCrop
-                        sourceSize.width: 800
-                        sourceSize.height: 800
-                      }
+                      height: linkCol.implicitHeight
+                      readonly property var link: modelData.link || ({})
+                      readonly property string imgUrl: link.image_id ? String(root.attFiles[String(link.image_id)] || "") : ""
+                      radius: root.corner(root.space(14))
+                      clip: true
+                      color: bubbleRow.mine ? root.mineFill : root.theirsFill
                       ColumnLayout {
-                        Layout.fillWidth: true
-                        Layout.margins: root.space(10)
-                        spacing: root.space(2)
-                        Text {
+                        id: linkCol
+                        width: parent.width
+                        spacing: 0
+                        Image {
+                          id: linkImage
+                          visible: linkCard.imgUrl !== "" && status === Image.Ready
                           Layout.fillWidth: true
-                          visible: text !== ""
-                          text: String(linkCard.link.title || "")
-                          textFormat: Text.PlainText
-                          wrapMode: Text.Wrap
-                          maximumLineCount: 2
-                          elide: Text.ElideRight
-                          color: bubbleRow.mine ? root.mineText : root.theirsText
-                          font.family: root.fontFamily
-                          font.pixelSize: root.fontSize(Style.font.bodySmall)
-                          font.bold: true
+                          // Link artwork is often portrait or square. Preserve
+                          // its natural aspect ratio instead of clipping every
+                          // preview to the old shallow 220-unit banner.
+                          Layout.preferredHeight: visible && implicitWidth > 0
+                            ? Math.min(root.space(480),
+                                Math.round(linkCard.width * implicitHeight / implicitWidth))
+                            : 0
+                          source: linkCard.imgUrl
+                          asynchronous: true
+                          fillMode: Image.PreserveAspectFit
+                          sourceSize.width: 960
+                          sourceSize.height: 960
                         }
-                        Text {
+                        ColumnLayout {
                           Layout.fillWidth: true
-                          visible: text !== ""
-                          text: String(linkCard.link.summary || "")
-                          textFormat: Text.PlainText
-                          wrapMode: Text.Wrap
-                          maximumLineCount: 2
-                          elide: Text.ElideRight
-                          color: bubbleRow.mine ? root.mineText : root.theirsText
-                          opacity: 0.85
-                          font.family: root.fontFamily
-                          font.pixelSize: root.fontSize(Style.font.caption)
-                        }
-                        Text {
-                          Layout.fillWidth: true
-                          text: root.linkHost(String(linkCard.link.url || ""))
-                          textFormat: Text.PlainText
-                          elide: Text.ElideRight
-                          color: bubbleRow.mine ? root.mineText : root.theirsText
-                          opacity: 0.6
-                          font.family: root.fontFamily
-                          font.pixelSize: root.fontSize(Style.font.caption)
+                          Layout.margins: root.space(10)
+                          spacing: root.space(2)
+                          Text {
+                            Layout.fillWidth: true
+                            visible: text !== ""
+                            text: String(linkCard.link.title || "")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                            color: bubbleRow.mine ? root.mineText : root.theirsText
+                            font.family: root.fontFamily
+                            font.pixelSize: root.fontSize(Style.font.bodySmall)
+                            font.bold: true
+                          }
+                          Text {
+                            Layout.fillWidth: true
+                            visible: text !== ""
+                            text: String(linkCard.link.summary || "")
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                            color: bubbleRow.mine ? root.mineText : root.theirsText
+                            opacity: 0.85
+                            font.family: root.fontFamily
+                            font.pixelSize: root.fontSize(Style.font.caption)
+                          }
+                          Text {
+                            Layout.fillWidth: true
+                            text: root.linkHost(String(linkCard.link.url || ""))
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            color: bubbleRow.mine ? root.mineText : root.theirsText
+                            opacity: 0.6
+                            font.family: root.fontFamily
+                            font.pixelSize: root.fontSize(Style.font.caption)
+                          }
                         }
                       }
+                      HoverHandler { cursorShape: Qt.PointingHandCursor }
+                      TapHandler { onTapped: root.openLink(String(linkCard.link.url || "")) }
                     }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: root.openLink(String(linkCard.link.url || "")) }
+
+                    TapbackReaction {
+                      mine: bubbleRow.mine
+                      // Messages anchors the reaction to the unfurled card,
+                      // including when the shared URL also has a caption.
+                      reactions: modelData.tapbacks || []
+                    }
                   }
                   Item { Layout.fillWidth: true; visible: !bubbleRow.mine }
                 }
@@ -2036,27 +2099,38 @@ FocusScope {
                   // A Messages-sized tapback pill overlaps the top edge —
                   // reserve its raised portion so adjacent runs stay clear.
                   Layout.topMargin: (modelData.groupStart ? root.space(6) : 0)
-                                    + ((modelData.tapbacks || []).length > 0 ? root.space(23) : 0)
+                                    + ((modelData.tapbacks || []).length > 0 && !modelData.link
+                                      ? root.space(23) : 0)
                   visible: !modelData.retracted &&
                            (String(modelData.text || "") !== "" || (modelData.attachments || []).length === 0) &&
                            modelData.linkOnly !== true
                   spacing: 0
 
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
+                  GroupMessageAvatarSlot {
+                    reserve: bubbleRow.incomingGroup
+                    handle: String(modelData.handle || "")
+                    name: String(modelData.name || "")
+                    showAvatar: bubbleRow.runEndsHere
+                  }
 
                   Item {
                     id: bubble
+                    readonly property bool expressiveEmoji: modelData.emojiOnly === true
                     readonly property real maxInner: Math.round(content.width * 0.78) - root.space(22)
                     readonly property real bubbleRadius: root.corner(root.space(16))
                     readonly property color color: bubbleRow.mine ? root.mineFill : root.theirsFill
-                    Layout.preferredWidth: Math.ceil(bubbleText.contentWidth) + root.space(22)
-                    Layout.preferredHeight: Math.ceil(bubbleText.contentHeight) + root.space(14)
+                    Layout.preferredWidth: Math.ceil(bubbleText.contentWidth)
+                      + (expressiveEmoji ? 0 : root.space(22))
+                    Layout.preferredHeight: Math.ceil(bubbleText.contentHeight)
+                      + (expressiveEmoji ? 0 : root.space(14))
 
                     // One path draws the rounded bubble and its squared sender
                     // corner. The old translucent Rectangle + overlapping
                     // corner Rectangle composited twice and made that corner
                     // visibly darker on incoming bubbles.
                     Shape {
+                      visible: !bubble.expressiveEmoji
                       anchors.fill: parent
                       antialiasing: true
                       ShapePath {
@@ -2107,7 +2181,8 @@ FocusScope {
                     // can be highlighted and Ctrl+C'd like any other text.
                     TextEdit {
                       id: bubbleText
-                      x: root.space(11); y: root.space(7)
+                      x: bubble.expressiveEmoji ? 0 : root.space(11)
+                      y: bubble.expressiveEmoji ? 0 : root.space(7)
                       width: bubble.maxInner
                       // html is pre-escaped + linkified in thread.ts (tested);
                       // plain messages keep the cheap PlainText path.
@@ -2131,68 +2206,19 @@ FocusScope {
                       selectionColor: bubbleRow.mine ? "#ffffff" : root.mineFill
                       selectedTextColor: bubbleRow.mine ? root.mineFill : "#ffffff"
                       font.family: root.fontFamily
-                      font.pixelSize: root.fontSize(Style.font.bodySmall)
+                      // macOS renders one-to-three emoji as expressive content:
+                      // roughly four body-text heights and without a chat bubble.
+                      font.pixelSize: bubble.expressiveEmoji
+                        ? Math.round(root.fontSize(Style.font.bodySmall) * 4.1)
+                        : root.fontSize(Style.font.bodySmall)
                       onActiveFocusChanged: root.bubbleFocused = activeFocus
                       Keys.onEscapePressed: { deselect(); composeField.forceActiveFocus() }
                     }
 
                     // tapback pill overlapping the corner opposite the tail
-                    Rectangle {
-                      id: tapbackPill
-                      visible: (modelData.tapbacks || []).length > 0
-                      readonly property real minimumSize: Math.max(
-                        root.space(32), Math.ceil(tapbackText.implicitHeight) + root.space(12)
-                      )
-                      width: Math.max(
-                        minimumSize, Math.ceil(tapbackText.implicitWidth) + root.space(18)
-                      )
-                      height: minimumSize
-                      radius: height / 2
-                      // Composite once against the theme background so the
-                      // pill and its tail remain opaque where they overlap a
-                      // translucent message bubble.
-                      color: root.incomingColorSetting === "theme"
-                        ? root.opaqueOver(
-                            Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28),
-                            Color.background
-                          )
-                        : root.opaqueOver(Qt.darker(root.theirsFill, 1.2), Color.background)
-                      border.width: 0
-                      anchors.top: parent.top
-                      anchors.topMargin: -Math.round(height * 0.74)
-                      anchors.right: bubbleRow.mine ? undefined : parent.right
-                      anchors.rightMargin: bubbleRow.mine ? 0 : -Math.round(width * 0.35)
-                      anchors.left: bubbleRow.mine ? parent.left : undefined
-                      anchors.leftMargin: bubbleRow.mine ? -Math.round(width * 0.35) : 0
-
-                      Rectangle {
-                        id: tapbackTailLarge
-                        width: Math.round(tapbackPill.height * 0.28)
-                        height: width
-                        radius: width / 2
-                        color: tapbackPill.color
-                        x: bubbleRow.mine ? 0 : tapbackPill.width - width
-                        y: Math.round(tapbackPill.height * 0.76)
-                      }
-                      Rectangle {
-                        id: tapbackTailSmall
-                        width: Math.max(3, Math.round(tapbackPill.height * 0.14))
-                        height: width
-                        radius: width / 2
-                        color: tapbackPill.color
-                        x: bubbleRow.mine
-                          ? -Math.round(tapbackPill.height * 0.08)
-                          : tapbackPill.width - width + Math.round(tapbackPill.height * 0.08)
-                        y: Math.round(tapbackPill.height * 1.08)
-                      }
-                      Text {
-                        id: tapbackText
-                        z: 1
-                        anchors.centerIn: parent
-                        text: root.tapbackRow(modelData.tapbacks)
-                        textFormat: Text.PlainText
-                        font.pixelSize: root.fontSize(Style.font.heading)
-                      }
+                    TapbackReaction {
+                      mine: bubbleRow.mine
+                      reactions: modelData.link ? [] : (modelData.tapbacks || [])
                     }
                   }
 
@@ -2208,6 +2234,12 @@ FocusScope {
                            modelData.failed === true
                   spacing: 0
                   Item { Layout.fillWidth: true; visible: bubbleRow.mine }
+                  GroupMessageAvatarSlot {
+                    reserve: bubbleRow.incomingGroup
+                    handle: String(modelData.handle || "")
+                    name: String(modelData.name || "")
+                    showAvatar: false
+                  }
                   Text {
                     Layout.rightMargin: bubbleRow.mine ? root.space(6) : 0
                     Layout.leftMargin: bubbleRow.mine ? 0 : root.space(6)
@@ -2356,6 +2388,138 @@ FocusScope {
           font.pixelSize: root.fontSize(Style.font.caption)
           wrapMode: Text.WordWrap
         }
+      }
+    }
+  }
+
+  component TapbackReaction: Rectangle {
+    id: tapbackPill
+    required property bool mine
+    required property var reactions
+    visible: reactions.length > 0
+    z: 10
+    readonly property real minimumSize: Math.max(
+      root.space(32), Math.ceil(tapbackText.implicitHeight) + root.space(12)
+    )
+    width: Math.max(minimumSize, Math.ceil(tapbackText.implicitWidth) + root.space(18))
+    height: minimumSize
+    radius: height / 2
+    // Composite once against the theme background so the pill and its tail
+    // remain opaque where they overlap a translucent bubble or link card.
+    color: root.incomingColorSetting === "theme"
+      ? root.opaqueOver(
+          Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28),
+          Color.background
+        )
+      : root.opaqueOver(Qt.darker(root.theirsFill, 1.2), Color.background)
+    border.width: 0
+    anchors.top: parent.top
+    anchors.topMargin: -Math.round(height * 0.74)
+    x: mine
+      ? -Math.round(width * 0.35)
+      : parent.width - width + Math.round(width * 0.35)
+
+    Rectangle {
+      id: tapbackTailLarge
+      width: Math.round(tapbackPill.height * 0.28)
+      height: width
+      radius: width / 2
+      color: tapbackPill.color
+      x: tapbackPill.mine ? 0 : tapbackPill.width - width
+      y: Math.round(tapbackPill.height * 0.76)
+    }
+    Rectangle {
+      id: tapbackTailSmall
+      width: Math.max(3, Math.round(tapbackPill.height * 0.14))
+      height: width
+      radius: width / 2
+      color: tapbackPill.color
+      x: tapbackPill.mine
+        ? -Math.round(tapbackPill.height * 0.08)
+        : tapbackPill.width - width + Math.round(tapbackPill.height * 0.08)
+      y: Math.round(tapbackPill.height * 1.08)
+    }
+    Text {
+      id: tapbackText
+      z: 1
+      anchors.centerIn: parent
+      text: root.tapbackRow(tapbackPill.reactions)
+      textFormat: Text.PlainText
+      font.pixelSize: root.fontSize(Style.font.heading)
+    }
+  }
+
+  // Incoming group runs share one avatar lane. Every message stays aligned,
+  // while only the final visual row from a sender actually paints the photo.
+  component GroupMessageAvatarSlot: Item {
+    id: groupAvatarSlot
+    required property bool reserve
+    required property string handle
+    required property string name
+    required property bool showAvatar
+    Layout.preferredWidth: reserve ? root.groupMessageAvatarSlot : 0
+    Layout.preferredHeight: showAvatar ? root.groupMessageAvatarSize : 1
+
+    function ensureAvatar() {
+      if (showAvatar && handle !== "") root.requestAvatar(handle)
+    }
+    Component.onCompleted: ensureAvatar()
+    onShowAvatarChanged: ensureAvatar()
+    onHandleChanged: ensureAvatar()
+
+    Rectangle {
+      id: groupAvatarCircle
+      visible: groupAvatarSlot.showAvatar
+      anchors.left: parent.left
+      anchors.bottom: parent.bottom
+      width: root.groupMessageAvatarSize
+      height: width
+      radius: width / 2
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+
+      Image {
+        id: groupAvatarImage
+        anchors.fill: parent
+        visible: false
+        source: root.avatarFiles[groupAvatarSlot.handle] || ""
+        asynchronous: true
+        fillMode: Image.PreserveAspectCrop
+        sourceSize.width: 96
+        sourceSize.height: 96
+        onStatusChanged: if (status === Image.Error && groupAvatarSlot.handle !== "") {
+          var files = Object.assign({}, root.avatarFiles)
+          files[groupAvatarSlot.handle] = ""
+          root.avatarFiles = files
+        }
+      }
+      Item {
+        id: groupAvatarMask
+        anchors.fill: parent
+        visible: false
+        layer.enabled: true
+        Rectangle { anchors.fill: parent; radius: width / 2 }
+      }
+      MultiEffect {
+        anchors.fill: parent
+        source: groupAvatarImage
+        visible: groupAvatarImage.status === Image.Ready
+        maskEnabled: true
+        maskSource: groupAvatarMask
+      }
+      Text {
+        anchors.centerIn: parent
+        visible: groupAvatarImage.status !== Image.Ready
+        text: {
+          var n = String(groupAvatarSlot.name || groupAvatarSlot.handle || "")
+          if (/^[+0-9]/.test(n) || n === "") return "#"
+          var parts = n.trim().split(/\s+/)
+          return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase()
+        }
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+        font.bold: true
       }
     }
   }
