@@ -88,6 +88,20 @@ describe("QML safety invariants", () => {
     expect(widget).not.toContain('/^[0-9]+$/.test(want)');
   });
 
+  test("message links and grouped bubble corners follow the bubble palette", () => {
+    expect(panel).toContain("function richMessageHtml(html, linkColor)");
+    expect(panel).toContain('text-decoration: underline;');
+    expect(panel).toContain("fillColor: bubble.color");
+    expect(panel).toContain("modelData.groupEnd === true && !bubbleRow.mine");
+    expect(panel).not.toContain("color: bubble.color\n                      anchors.bottom");
+  });
+
+  test("inline media has a logical-width cap on wide and high-DPI windows", () => {
+    expect(panel).toContain("Math.round(content.width * 0.6), root.space(380)");
+    expect(panel).toContain("Number(chipRow.imageMetrics.pixelWidth) / pixelRatio");
+    expect(panel).toContain("metrics[id] = { pixelRatio: ratio, pixelWidth: pixelWidth, pixelHeight: pixelHeight }");
+  });
+
   test("read marks are queued and only applied after a successful load", () => {
     expect(widget).toContain("property var refreshQueue: []");
     expect(widget).not.toContain("property var queued: null");

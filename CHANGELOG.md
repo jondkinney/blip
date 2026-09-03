@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make message links inherit the bubble's readable text color, render grouped
+  bubble corners as one translucent shape without a darker overlap, and cap
+  inline media in logical UI units on wide windows. Retina PNG density is now
+  honored so 144-DPI screenshots render at their intended 2× logical scale.
 - Fix contact deletion and consolidation on macOS. Contacts.app does not expose
   a scriptable delete command; Blip now applies the already previewed, exact-card
   deletion through Apple's current Contacts framework and verifies every removal
