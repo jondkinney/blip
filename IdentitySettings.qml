@@ -336,17 +336,7 @@ ColumnLayout {
   ColumnLayout {
     Layout.fillWidth: true
     visible: !root.reviewActive
-    spacing: root.space(10)
-
-  Text {
-    Layout.fillWidth: true
-    text: "Choose a conversation to inspect the Mac contact cards Blip found for it. You can clean up Contacts without creating a Blip-specific display name."
-    textFormat: Text.PlainText
-    wrapMode: Text.WordWrap
-    color: Qt.darker(root.foreground, 1.35)
-    font.family: root.fontFamily
-    font.pixelSize: root.fontSize(Style.font.bodySmall)
-  }
+    spacing: root.space(12)
 
   Text {
     Layout.fillWidth: true
@@ -415,52 +405,6 @@ ColumnLayout {
     }
   }
 
-  RowLayout {
-    Layout.fillWidth: true
-    visible: root.unresolvedWithShortCodes.length > 0
-    spacing: root.space(10)
-    Text {
-      Layout.fillWidth: true
-      text: "CONVERSATIONS SHOWN AS NUMBERS"
-      textFormat: Text.PlainText
-      color: Qt.darker(root.foreground, 1.25)
-      font.family: root.fontFamily
-      font.pixelSize: root.fontSize(Style.font.caption)
-      font.bold: true
-    }
-    ToggleSwitch {
-      label: "Hide short-code senders"
-      checked: root.hideShortCodeConversations
-      enabled: root.preferences && root.preferences.loaded
-      onToggled: function(value) {
-        if (root.preferences) root.preferences.setBoolean("hideShortCodeConversations", value)
-      }
-    }
-  }
-
-  Text {
-    Layout.fillWidth: true
-    visible: root.unresolvedWithShortCodes.length > 0
-    text: root.auditActionableOnly && root.currentAudit
-      ? root.unresolved.length + " Contacts matches shown · "
-        + root.reviewableConversations.length + " phone/email conversations in the full queue."
-      : root.hideShortCodeConversations
-      ? root.reviewableConversations.length + (root.reviewableConversations.length === 1
-        ? " phone/email conversation to review · "
-        : " phone/email conversations to review · ")
-        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
-          ? " short-code/service conversation hidden."
-          : " short-code/service conversations hidden.")
-      : root.visibleConversations.length + " conversations shown · "
-        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
-          ? " looks like a short-code/service sender."
-          : " look like short-code/service senders.")
-    textFormat: Text.PlainText
-    color: Qt.darker(root.foreground, 1.4)
-    font.family: root.fontFamily
-    font.pixelSize: root.fontSize(Style.font.caption)
-  }
-
   Rectangle {
     Layout.fillWidth: true
     visible: root.unresolvedWithShortCodes.length > 0
@@ -497,6 +441,7 @@ ColumnLayout {
 
   Rectangle {
     Layout.fillWidth: true
+    Layout.topMargin: root.space(8)
     visible: root.auditableConversations.length > 0
     implicitHeight: auditContent.implicitHeight + root.space(24)
     radius: root.corner(root.space(10))
@@ -602,12 +547,70 @@ ColumnLayout {
     }
   }
 
+  RowLayout {
+    Layout.fillWidth: true
+    Layout.topMargin: root.space(12)
+    visible: root.unresolvedWithShortCodes.length > 0
+    spacing: root.space(12)
+    Text {
+      Layout.fillWidth: true
+      text: "CHOOSE A CONVERSATION TO REVIEW"
+      textFormat: Text.PlainText
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.bodySmall)
+      font.bold: true
+    }
+    ToggleSwitch {
+      label: "Hide short-code senders"
+      checked: root.hideShortCodeConversations
+      enabled: root.preferences && root.preferences.loaded
+      onToggled: function(value) {
+        if (root.preferences) root.preferences.setBoolean("hideShortCodeConversations", value)
+      }
+    }
+  }
+
+  Text {
+    Layout.fillWidth: true
+    visible: root.unresolvedWithShortCodes.length > 0
+    text: "These conversations show a phone number or email instead of one unambiguous Contacts name. Choose one to inspect its matching cards, clean up Contacts, or set an optional Blip display preference."
+    textFormat: Text.PlainText
+    wrapMode: Text.WordWrap
+    color: Qt.darker(root.foreground, 1.3)
+    font.family: root.fontFamily
+    font.pixelSize: root.fontSize(Style.font.bodySmall)
+  }
+
+  Text {
+    Layout.fillWidth: true
+    visible: root.unresolvedWithShortCodes.length > 0
+    text: root.auditActionableOnly && root.currentAudit
+      ? root.unresolved.length + " Contacts matches shown · "
+        + root.reviewableConversations.length + " phone/email conversations in the full queue."
+      : root.hideShortCodeConversations
+      ? root.reviewableConversations.length + (root.reviewableConversations.length === 1
+        ? " phone/email conversation to review · "
+        : " phone/email conversations to review · ")
+        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
+          ? " short-code/service conversation hidden."
+          : " short-code/service conversations hidden.")
+      : root.visibleConversations.length + " conversations shown · "
+        + root.hiddenShortCodeCount + (root.hiddenShortCodeCount === 1
+          ? " looks like a short-code/service sender."
+          : " look like short-code/service senders.")
+    textFormat: Text.PlainText
+    color: Qt.darker(root.foreground, 1.4)
+    font.family: root.fontFamily
+    font.pixelSize: root.fontSize(Style.font.caption)
+  }
+
   Repeater {
     model: root.unresolved
     delegate: Rectangle {
       required property var modelData
       Layout.fillWidth: true
-      implicitHeight: unresolvedRow.implicitHeight + root.space(16)
+      implicitHeight: unresolvedRow.implicitHeight + root.space(22)
       radius: root.corner(root.space(9))
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.035)
       border.width: 1
@@ -615,8 +618,8 @@ ColumnLayout {
       RowLayout {
         id: unresolvedRow
         anchors.fill: parent
-        anchors.margins: root.space(8)
-        spacing: root.space(10)
+        anchors.margins: root.space(11)
+        spacing: root.space(12)
         ColumnLayout {
           Layout.fillWidth: true
           spacing: root.space(2)
@@ -1040,6 +1043,16 @@ ColumnLayout {
         spacing: root.space(8)
         SectionHeading { label: "MANAGE MAC CONTACTS" }
         SmallButton {
+          visible: contactWorkspace.editorCard === null
+            && (!root.resolver || root.resolver.mutationPreview === null)
+            && (!root.resolver || root.resolver.repairPreview === null)
+            && (!root.resolver || root.resolver.comparison === null)
+          label: "Refresh source cards"
+          enabled: root.resolver && !root.resolver.loading
+          onClicked: root.resolver.findCandidates(root.resolver.activeHandle)
+        }
+        SmallButton {
+          visible: !root.resolver || root.resolver.comparison === null
           label: "Back to tasks"
           enabled: root.resolver && !root.resolver.loading
           onClicked: {
@@ -1353,7 +1366,8 @@ ColumnLayout {
 
       Text {
         Layout.fillWidth: true
-        visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate !== null
+        visible: contactWorkspace.editorCard === null && root.resolver
+          && root.resolver.candidates.length > 0 && root.selectedCandidate !== null
         text: "Viewing or opening a card makes no change. Editing, deletion, consolidation, and handle removal all require a separate confirmation."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
@@ -1362,15 +1376,6 @@ ColumnLayout {
         font.pixelSize: root.fontSize(Style.font.caption)
       }
 
-      RowLayout {
-        Layout.fillWidth: true
-        spacing: root.space(8)
-        SmallButton {
-          label: "Check Mac Contacts again"
-          enabled: root.resolver && !root.resolver.loading
-          onClicked: root.resolver.findCandidates(root.resolver.activeHandle)
-        }
-      }
       }
     }
   }

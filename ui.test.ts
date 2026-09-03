@@ -193,7 +193,7 @@ describe("QML safety invariants", () => {
   });
 
   test("contact management and optional Blip display preferences are separate flows", () => {
-    expect(identitySettings).toContain("CONVERSATIONS SHOWN AS NUMBERS");
+    expect(identitySettings).toContain("CHOOSE A CONVERSATION TO REVIEW");
     expect(identitySettings).toContain("WHY THEY ARE HERE");
     expect(identitySettings).toContain("Short codes and service senders can simply be left alone.");
     expect(identitySettings).toContain("Review contact…");
@@ -220,7 +220,19 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("CUSTOM BLIP-ONLY DISPLAY NAME");
     expect(identitySettings).toContain("This selection is not written to identities.json.");
     expect(identitySettings).toContain("Viewing or opening a card makes no change");
-    expect(identitySettings).toContain("Check Mac Contacts again");
+    expect(identitySettings).toContain("CHOOSE A CONVERSATION TO REVIEW");
+    expect(identitySettings.indexOf("WHY THEY ARE HERE"))
+      .toBeLessThan(identitySettings.indexOf("FIND CONTACTS CLEANUP OPPORTUNITIES"));
+    expect(identitySettings.indexOf("FIND CONTACTS CLEANUP OPPORTUNITIES"))
+      .toBeLessThan(identitySettings.indexOf("CHOOSE A CONVERSATION TO REVIEW"));
+    expect(identitySettings.indexOf("CHOOSE A CONVERSATION TO REVIEW"))
+      .toBeLessThan(identitySettings.indexOf("model: root.unresolved"));
+    expect(identitySettings).toContain("Refresh source cards");
+    expect(identitySettings).not.toContain("Check Mac Contacts again");
+    expect(identitySettings.indexOf("Refresh source cards"))
+      .toBeLessThan(identitySettings.indexOf("ContactCardCompare {"));
+    expect(identitySettings).toContain("root.resolver.comparison === null");
+    expect(identitySettings).toContain("visible: contactWorkspace.editorCard === null && root.resolver");
     expect(identitySettings).toContain("root.resolver.candidates.length === 1");
     expect(identitySettings).not.toContain("root.selectedChoiceIsSaved\n                  && (!root.resolver.comparison");
     expect(identityHelper).not.toContain("requireSavedRepairOwner");
@@ -265,7 +277,7 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Manage Contacts…");
     expect(identitySettings).toContain("sourceCandidate.cardsExpanded ? sourceCandidate.modelData.cards : []");
     expect(identitySettings).toContain("root.candidateForToken(saved.contactToken)");
-    expect(settings).toContain('text: "Saved as portable JSON files"');
+    expect(settings).not.toContain("Saved as portable JSON files");
     expect(settings).toContain("Layout.alignment: Qt.AlignTop");
   });
 
@@ -292,7 +304,12 @@ describe("QML safety invariants", () => {
   test("contact comparison is local and linking has a separate upstream confirmation", () => {
     expect(identitySettings).toContain("Manage " + '" + sourceCandidate.modelData.recordCount');
     expect(identitySettings).toContain("ContactCardCompare");
-    expect(contactCompare).toContain('title: "Compare"');
+    expect(contactCompare).toContain('title: "Compare source cards"');
+    expect(contactCompare).toContain('title: "Consolidate into one card"');
+    expect(contactCompare).toContain('title: "Or link cards · optional"');
+    expect(contactCompare).not.toContain("step: \"");
+    expect(contactCompare).toContain("Reload cards from Mac");
+    expect(contactCompare).toContain("Back to contact tasks");
     expect(contactCompare).toContain("DIFFERENCES ONLY");
     expect(contactCompare).toContain("sharedRowMap");
     expect(contactCompare).toContain("MERGED PREVIEW");
@@ -314,6 +331,10 @@ describe("QML safety invariants", () => {
   test("the contact workspace edits, deletes, and consolidates only after preview", () => {
     expect(contactCompare).toContain("ContactCardEditor");
     expect(contactCompare).toContain("Merge into \" + modelData.sourceName");
+    expect(panel).toContain('iconText: "⚙"');
+    expect(panel).toContain('tooltipText: "Settings"\n            bordered: false');
+    expect(panel).toContain('iconText: "＋"');
+    expect(panel).toContain('tooltipText: "New message (n)"\n            bordered: false');
     expect(contactEditor).toContain("Review changes…");
     expect(contactEditor).toContain("Delete this source card…");
     expect(contactEditor).toContain("Review merged contact…");

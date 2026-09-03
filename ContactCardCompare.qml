@@ -263,22 +263,21 @@ ColumnLayout {
       }
     }
     SmallButton {
-      label: "Refresh"
+      label: "Reload cards from Mac"
       enabled: root.resolver && !root.resolver.loading && root.comparison
       onClicked: root.resolver.compareCards(root.comparison.handle, root.comparison.ownerToken)
     }
     SmallButton {
-      label: "Close"
+      label: "Back to contact tasks"
       enabled: root.resolver && !root.resolver.loading
       onClicked: root.resolver.cancelComparison()
     }
   }
 
-  StageHeader {
+  ActionHeader {
     visible: root.editorCard === null
     Layout.topMargin: root.space(4)
-    step: "1"
-    title: "Compare"
+    title: "Compare source cards"
     detail: root.showSharedFields || root.sharedCount === 0
       ? "Showing every discovered value."
       : root.sharedCount + (root.sharedCount === 1 ? " shared value is" : " shared values are")
@@ -422,14 +421,13 @@ ColumnLayout {
     }
   }
 
-  StageHeader {
+  ActionHeader {
     visible: root.editorCard === null
-    Layout.topMargin: root.space(14)
-    step: "2"
-    title: "Consolidate"
+    Layout.topMargin: root.space(20)
+    title: "Consolidate into one card"
     detail: root.incompleteCardCount(root.comparison) === 0
-      ? "Build one editable card from the discovered values, then choose which Contacts source keeps it."
-      : "The merged draft fills blanks and combines unique values; review every field before saving."
+      ? "Choose this option to build one editable card and delete the other source cards after confirmation."
+      : "Choose this option to fill blanks, combine unique values, and delete the other source cards after review."
   }
 
   Rectangle {
@@ -529,12 +527,11 @@ ColumnLayout {
     }
   }
 
-  StageHeader {
+  ActionHeader {
     visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
-    Layout.topMargin: root.space(14)
-    step: "3"
-    title: "Link"
-    detail: "Ask Contacts whether it can link these exact source cards. Checking makes no changes."
+    Layout.topMargin: root.space(20)
+    title: "Or link cards · optional"
+    detail: "An alternative to consolidation: keep both source cards and ask Contacts to present them as one person. Checking makes no changes."
   }
 
   Rectangle {
@@ -644,29 +641,11 @@ ColumnLayout {
     font.pixelSize: root.fontSize(Style.font.caption)
   }
 
-  component StageHeader: RowLayout {
-    property string step: ""
+  component ActionHeader: RowLayout {
     property string title: ""
     property string detail: ""
     Layout.fillWidth: true
     spacing: root.space(10)
-    Rectangle {
-      Layout.preferredWidth: root.space(26)
-      Layout.preferredHeight: root.space(26)
-      radius: width / 2
-      color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.18)
-      border.width: 1
-      border.color: root.accent
-      Text {
-        anchors.centerIn: parent
-        text: parent.parent.step
-        textFormat: Text.PlainText
-        color: root.accent
-        font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.caption)
-        font.bold: true
-      }
-    }
     ColumnLayout {
       Layout.fillWidth: true
       spacing: root.space(1)
@@ -674,7 +653,7 @@ ColumnLayout {
         Layout.fillWidth: true
         text: parent.parent.title.toUpperCase()
         textFormat: Text.PlainText
-        color: root.foreground
+        color: root.accent
         font.family: root.fontFamily
         font.pixelSize: root.fontSize(Style.font.caption)
         font.bold: true

@@ -1275,7 +1275,7 @@ FocusScope {
             focusable: true
             iconText: "⚙"
             tooltipText: "Settings"
-            bordered: true
+            bordered: false
             foreground: root.foreground
             hoverColor: root.accent
             fontFamily: root.fontFamily
@@ -1804,7 +1804,7 @@ FocusScope {
             Layout.topMargin: root.space(6)
             iconText: "＋"
             tooltipText: "New message (n)"
-            bordered: true
+            bordered: false
             foreground: root.foreground
             hoverColor: root.accent
             fontFamily: root.fontFamily
