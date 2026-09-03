@@ -529,6 +529,45 @@ class ContactResolverTests(unittest.TestCase):
         self.assertEqual(events, ["receipt", "automation"])
         self.assertTrue(result["applied"])
 
+    def test_card_collection_edit_uses_native_contacts_update(self):
+        before = {
+            "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+            "lastName": "Rivera", "nickname": "", "organization": "",
+            "department": "", "jobTitle": "", "birthday": "", "note": "",
+            "phones": [{"label": "mobile", "value": "+15550100001"}],
+            "emails": [], "urls": [], "addresses": [],
+        }
+        draft = contacts.card_draft({
+            **before, "phones": [{"label": "mobile", "value": "+15550100002"}],
+        })
+        after = {**before, **draft}
+        plan = "sha256:" + "d" * 64
+        preview = {"planHash": plan, "changedFields": ["phone numbers"]}
+        private = {
+            "personUid": "person-1", "before": before, "after": draft,
+            "handle": "+15550100001", "name": "Alex Rivera",
+            "cardToken": "sha256:" + "b" * 64, "planHash": plan,
+        }
+        events = []
+        with mock.patch.object(contacts, "require_write_gate"), mock.patch.object(
+            contacts, "prepare_card_edit", return_value=(preview, private),
+        ), mock.patch.object(
+            contacts, "write_undo_receipt",
+            side_effect=lambda value: events.append("receipt") or "undo:" + "c" * 32,
+        ), mock.patch.object(
+            contacts, "run_contact_update",
+            side_effect=lambda uid, card: events.append("native") or {"updated": True},
+        ), mock.patch.object(contacts, "describe_records", return_value=[after]), mock.patch.object(
+            contacts, "run_contact_repair",
+        ) as automation:
+            result = contacts.apply_card_edit(
+                "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
+                contacts.card_revision(before), draft, plan,
+            )
+        self.assertEqual(events, ["receipt", "native"])
+        automation.assert_not_called()
+        self.assertTrue(result["applied"])
+
     def test_consolidation_plan_pins_every_card_and_keeps_raw_ids_private(self):
         base = {
             "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
@@ -612,23 +651,21 @@ class ContactResolverTests(unittest.TestCase):
             side_effect=lambda value: events.append("receipt") or "undo:" + "e" * 32,
         ), mock.patch.object(
             contacts, "run_contact_repair",
-            side_effect=lambda value: events.append(value["operation"]) or (
-                {"ok": True, "readyToConsolidate": True, "sourceCount": 1}
-                if value["operation"] == "consolidate"
-                else {"ok": True, "edited": True, "card": after}
-            ),
-        ), mock.patch.object(
-            contacts, "run_contact_delete",
-            side_effect=lambda value: events.append("delete") or {
-                "ok": True, "deletedCount": len(value),
+            side_effect=lambda value: events.append(value["operation"]) or {
+                "ok": True, "readyToConsolidate": True, "sourceCount": 1,
             },
-        ) as delete:
+        ), mock.patch.object(
+            contacts, "run_contact_consolidation",
+            side_effect=lambda target, sources, card: events.append("native") or {
+                "ok": True, "updated": True, "deletedCount": len(sources),
+            },
+        ) as consolidate:
             result = contacts.apply_consolidation(
                 "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
                 [], draft, plan,
             )
-        self.assertEqual(events, ["consolidate", "receipt", "edit", "delete"])
-        delete.assert_called_once_with(["person-2"])
+        self.assertEqual(events, ["consolidate", "receipt", "native"])
+        consolidate.assert_called_once_with("person-1", ["person-2"], draft)
         self.assertTrue(result["applied"])
 
     def test_consolidation_never_deletes_a_source_when_survivor_save_fails(self):
@@ -657,12 +694,11 @@ class ContactResolverTests(unittest.TestCase):
             contacts, "write_undo_receipt", return_value="undo:" + "e" * 32,
         ), mock.patch.object(
             contacts, "run_contact_repair",
-            side_effect=[
-                {"ok": True, "readyToConsolidate": True, "sourceCount": 1},
-                {"ok": False, "edited": False},
-            ],
+            return_value={"ok": True, "readyToConsolidate": True, "sourceCount": 1},
+        ), mock.patch.object(
+            contacts, "run_contact_consolidation", side_effect=RuntimeError("native save failed"),
         ), mock.patch.object(contacts, "run_contact_delete") as delete:
-            with self.assertRaisesRegex(RuntimeError, "merged iCloud card save"):
+            with self.assertRaisesRegex(RuntimeError, "native save failed"):
                 contacts.apply_consolidation(
                     "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64,
                     [], draft, plan,

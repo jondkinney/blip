@@ -722,6 +722,18 @@ def run_contact_delete(person_uids: list[str]) -> dict:
     return response
 
 
+def run_contact_update(target_uid: str, draft: dict) -> dict:
+    if not _PERSON_UID.fullmatch(target_uid):
+        raise RuntimeError("Contacts update card id is invalid")
+    response = run_native_contact_mutation({
+        "operation": "update", "targetUid": target_uid,
+        "card": validated_card_draft(draft),
+    })
+    if response.get("updated") is not True:
+        raise RuntimeError("Contacts did not confirm the card update")
+    return response
+
+
 def run_contact_consolidation(target_uid: str, source_uids: list[str], draft: dict) -> dict:
     if (not _PERSON_UID.fullmatch(target_uid) or not 1 <= len(source_uids) <= 7
             or len(set(source_uids)) != len(source_uids) or target_uid in source_uids
@@ -951,6 +963,12 @@ def changed_card_fields(before: dict, after: dict) -> list[str]:
     return [labels[key] for key in labels if before.get(key) != after.get(key)]
 
 
+def contact_collections_changed(before: dict, after: dict) -> bool:
+    return any(before.get(key) != after.get(key) for key in (
+        "phones", "emails", "urls", "addresses",
+    ))
+
+
 def mutation_metadata(
     action: str, original: str, candidate: dict, card_number: int, account_number: int,
     source_name: str, changed: list[str], plan_hash: str, source_count: int = 0,
@@ -1024,14 +1042,25 @@ def apply_card_edit(
     preview, private = prepare_card_edit(handle, owner_token, token, revision, draft_value)
     if preview["planHash"] != require_plan_hash(expected_plan):
         raise ValueError("the contact edit changed; preview it again before saving")
+    native_update = contact_collections_changed(private["before"], private["after"])
+    if native_update and private["before"]["note"] != private["after"]["note"]:
+        raise ValueError(
+            "save contact notes separately from phone, email, website, or address changes"
+        )
     undo_token = write_undo_receipt({"action": "edit", **private})
-    result = run_contact_repair({
-        "operation": "edit", "personUid": private["personUid"],
-        "expectedCard": private["before"], "card": private["after"],
-    })
-    if result.get("edited") is not True:
-        raise RuntimeError("Contacts did not confirm the card edit")
-    after = validated_card_detail(result.get("card"))
+    if native_update:
+        run_contact_update(private["personUid"], private["after"])
+        after = validated_card_detail(describe_records([{"uid": private["personUid"]}])[0])
+    else:
+        result = run_contact_repair({
+            "operation": "edit", "personUid": private["personUid"],
+            "expectedCard": private["before"], "card": private["after"],
+        })
+        if result.get("edited") is not True:
+            raise RuntimeError("Contacts did not confirm the card edit")
+        after = validated_card_detail(result.get("card"))
+    if card_draft(after) != private["after"]:
+        raise RuntimeError("Contacts changed the contact card while saving it")
     return {
         **preview, "applied": True, "undoToken": undo_token,
         "revision": card_revision(after), "displayName": after["displayName"],
@@ -1160,24 +1189,20 @@ def apply_consolidation(
             or result.get("sourceCount") != len(private["sources"])):
         raise RuntimeError("Contacts did not confirm the consolidation preflight")
     undo_token = write_undo_receipt({"action": "consolidate", **private})
-    # Contacts can reject a native save request that updates one account and
-    # deletes from another. Commit and verify the survivor through the same
-    # Contacts.app path used by ordinary edits, then delete source cards only
-    # after that save succeeds. A failed update therefore cannot remove data.
-    updated = run_contact_repair({
-        "operation": "edit", "personUid": private["targetUid"],
-        "expectedCard": private["targetBefore"], "card": private["targetAfter"],
-    })
-    if updated.get("edited") is not True:
-        raise RuntimeError("Contacts did not confirm the merged iCloud card save")
-    updated_card = validated_card_detail(updated.get("card"))
+    # The native helper saves and verifies the survivor before deleting source
+    # cards. For cross-account merges it issues one deletion request per source
+    # container, avoiding the CNSaveRequest cross-store failure.
+    run_contact_consolidation(
+        private["targetUid"],
+        [source["personUid"] for source in private["sources"]],
+        private["targetAfter"],
+    )
+    updated_card = validated_card_detail(
+        describe_records([{"uid": private["targetUid"]}])[0]
+    )
     if card_draft(updated_card) != private["targetAfter"]:
         raise RuntimeError("Contacts changed the merged card while saving it")
-    # Delete each source independently. This avoids asking one CNSaveRequest
-    # to cross backing accounts; all deletion begins after survivor verification.
-    for source in private["sources"]:
-        run_contact_delete([source["personUid"]])
-    after = validated_card_detail(describe_records([{"uid": private["targetUid"]}])[0])
+    after = updated_card
     return {
         **preview, "applied": True, "undoToken": undo_token,
         "revision": card_revision(after), "displayName": after["displayName"],

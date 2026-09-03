@@ -346,7 +346,7 @@ private func safeMessage(_ error: Error) -> String {
 
 do {
     let request = try JSONDecoder().decode(Request.self, from: boundedInput())
-    guard ["available", "delete", "consolidate", "names", "vcard"].contains(request.operation) else {
+    guard ["available", "delete", "update", "consolidate", "names", "vcard"].contains(request.operation) else {
         throw failure("Contacts mutation operation is invalid", code: 11)
     }
     guard CNContactStore.authorizationStatus(for: .contacts) == .authorized else {
@@ -388,6 +388,26 @@ do {
             : (!card.organization.isEmpty ? card.organization : card.nickname)
         emit(VCardResponse(ok: true, name: name, vcard: data.base64EncodedString()),
              maximum: maxVCardResponseBytes)
+        exit(0)
+    }
+
+    if request.operation == "update" {
+        guard let targetUid = request.targetUid, validId(targetUid), let card = request.card else {
+            throw failure("Contacts update request is incomplete", code: 26)
+        }
+        try validateCard(card)
+        let target = try exactContact(targetUid, in: store, keys: mutationKeys)
+        guard let mutable = target.mutableCopy() as? CNMutableContact else {
+            throw failure("Contacts returned a read-only target card", code: 17)
+        }
+        try apply(card, to: mutable)
+        let save = CNSaveRequest()
+        save.update(mutable)
+        try store.execute(save)
+        _ = try exactContact(targetUid, in: store,
+                             keys: [CNContactIdentifierKey as CNKeyDescriptor])
+        emit(Response(ok: true, availableCount: nil, deletedCount: nil,
+                      updated: true, error: nil, names: nil))
         exit(0)
     }
 
