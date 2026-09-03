@@ -11,6 +11,7 @@ const settings = readFileSync(new URL("./BlipSettings.qml", import.meta.url), "u
 const identities = readFileSync(new URL("./BlipIdentities.qml", import.meta.url), "utf8");
 const identityHelper = readFileSync(new URL("./identities.ts", import.meta.url), "utf8");
 const preferences = readFileSync(new URL("./BlipPreferences.qml", import.meta.url), "utf8");
+const popout = readFileSync(new URL("./Panel.qml", import.meta.url), "utf8");
 
 describe("QML safety invariants", () => {
   test("group sends use the cached AppleScript GUID", () => {
@@ -139,6 +140,17 @@ describe("QML safety invariants", () => {
 
   test("the sidebar header is compact and pinned labels use Messages names", () => {
     expect(panel).toContain('tooltipText: "Settings"');
+    expect(panel).toContain("readonly property real splitHeaderHeight");
+    expect(panel).toContain("Layout.topMargin: root.splitView ? root.space(6) : 0");
+    expect(panel).toContain("spacing: root.splitView\n              ? root.space(10)");
+    expect(panel).toContain('root.unread > 0 ? root.unread + " UNREAD" : "ALL CAUGHT UP"');
+    expect(panel).toContain("Layout.preferredHeight: root.splitView\n            ? root.splitHeaderHeight");
+    expect(panel).toContain("id: splitConversationHero");
+    expect(panel).toContain("id: conversationHeaderSpacer");
+    expect(panel).toContain("Math.max(root.space(160), conversationPane.width * 0.50)");
+    expect(panel).toContain('text: !root.inThread\n                ? ""');
+    expect(panel).toContain("Layout.alignment: Qt.AlignVCenter");
+    expect(panel).not.toContain('visible: root.splitView && !root.newMode\n            Layout.alignment: Qt.AlignTop');
     expect(panel).toContain("thread.pin_name || thread.name || thread.chat");
     expect(panel.match(/id: pinnedGrid/g)).toHaveLength(1);
     expect(panel).not.toContain('text: "PINNED"');
@@ -152,6 +164,16 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("id: groupContactMenu");
     expect(panel).toContain("id: messageOnlyMenu");
     expect(panel).not.toContain("id: contactContextMenu");
+    // bubble right-clicks copy the message only; contact actions live on the
+    // sidebar rows and pinned tiles where the click names a person
+    expect(panel).toContain("function openMessageContext(messageText)");
+    expect(panel).not.toContain("id: directMessageMenu");
+    expect(panel).not.toContain("id: groupMessageMenu");
+    expect(panel).toContain("root.openMessageContext(String(modelData.text || \"\"))");
+    // participants cross a QML boundary as a QVariantList (Array.isArray false);
+    // iterate by length, never gate on isArray
+    expect(panel).not.toContain("Array.isArray(thread.participants)");
+    expect(panel).toContain("var participantCount = Number(participants.length) || 0");
     expect(panel).toContain("settingsView.editContact(person.handle)");
     expect(settings).toContain("identitySettings.editContact(handle)");
     expect(identitySettings).toContain("directEditorPending");
@@ -167,18 +189,100 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("index < root.regularThreads.length - 1");
   });
 
-  test("appearance previews real bubble corners and offers portable list time formatting", () => {
+  test("appearance previews the app to scale with real bubble corners and portable list times", () => {
     expect(settings).toContain("component AppearancePreview: Rectangle");
     expect(settings).toContain('text: "LIVE APP PREVIEW"');
     expect(settings).toContain("configuredSidebar");
     expect(settings).toContain("configuredAvatar");
-    expect(settings).toContain("appearancePreview.previewSidebar");
-    expect(settings).toContain("appearancePreview.previewAvatar");
+    // one uniform scale transform over REAL app dimensions — the raw-px
+    // sidebar and spaceReal avatar formulas, never per-part fudge factors
+    expect(settings).toContain("scale: appearancePreview.previewScale");
+    expect(settings).toContain("Layout.preferredWidth: appearancePreview.configuredSidebar");
+    expect(settings).toContain("Math.round(Style.spaceReal(configuredAvatar) * 1.75), root.liveSpace(48))");
+    // fixed 1040×720 reference geometry, capped at an honest 100%
+    expect(settings).toContain("readonly property real appWidth: 1040");
+    expect(settings).toContain("Math.max(0.05, Math.min(1,");
+    expect(settings).not.toContain("previewSidebar");
+    expect(settings).not.toContain("* 0.76");
     expect(settings).toContain("component PreviewBubble: Item");
     expect(settings).toContain("previewBubble.mine ? previewBubble.height");
     expect(settings).toContain('label: "12-hour (AM/PM)"');
     expect(settings).toContain('setBoolean("use12HourConversationTimes", true)');
     expect(panel).toContain("preferences.use12HourConversationTimes");
+  });
+
+  test("settings opens on the appearance tab, listed first", () => {
+    expect(settings).toContain('property string page: "appearance"');
+    expect(settings).toContain('page = value === "contacts" ? "contacts" : "appearance"');
+    expect(settings.indexOf('label: "Appearance"')).toBeLessThan(settings.indexOf('label: "Contacts"'));
+    expect(panel).toContain('String(page || "appearance")');
+    // the contact editor path still lands on the contacts page explicitly
+    expect(panel).toContain('openSettings("contacts")');
+  });
+
+  test("appearance sliders re-lay-out only the preview, never the settings chrome", () => {
+    // chrome uses scales frozen at open; the scaled miniature tracks live values
+    expect(settings).toContain("function freezeChrome()");
+    expect(settings).toContain("onVisibleChanged: if (visible) freezeChrome()");
+    expect(settings).toContain("Math.round(value * chromeFontScale)");
+    expect(settings).toContain("Style.spaceReal(value) * chromeDensity");
+    expect(settings).toContain("function liveSpace(value)");
+    expect(settings).toContain("fontScale: root.chromeFontScale");
+  });
+
+  test("the settings tab hint cannot stretch the narrow popout", () => {
+    expect(settings).toContain("horizontalAlignment: Text.AlignRight");
+    expect(settings).toContain('? "Manage Mac Contacts or set an optional display preference"');
+    const hint = settings.indexOf('? "Manage Mac Contacts or set an optional display preference"');
+    const block = settings.slice(hint - 400, hint);
+    expect(block).toContain("Layout.fillWidth: true");
+    expect(block).toContain("elide: Text.ElideRight");
+  });
+
+  test("chronological rows are contiguous so hover fills up to the separator", () => {
+    expect(panel).toContain("root.space(root.splitView ? 30 : 18)");
+    expect(panel).not.toContain("root.space(root.splitView ? 20 : 12)");
+    expect(panel).toContain("// Chronological rows are CONTIGUOUS");
+    // separators touching a highlighted row hide so the hover reads as one block
+    expect(panel).toContain("!chronoRows.rowActive(index) && !chronoRows.rowActive(index + 1)");
+    expect(panel).toContain("if (hovered) chronoRows.hoveredRow = index");
+  });
+
+  test("popout header hosts new/window/settings actions and widens for settings", () => {
+    expect(panel).toContain("id: headerActions");
+    // ordered by function: content action, surface action, configuration
+    const plus = panel.indexOf('tooltipText: "New message (n)"');
+    const promote = panel.indexOf('tooltipText: "Open the app window (SUPER+M)"');
+    const gear = panel.indexOf('tooltipText: "Settings"');
+    expect(plus).toBeGreaterThan(-1);
+    expect(promote).toBeGreaterThan(plus);
+    expect(gear).toBeGreaterThan(promote);
+    // settings double the dropdown: appearance fits preview + controls side by
+    // side, and the contacts review/compare workflows get room to function
+    expect(panel).toContain("readonly property bool settingsWide: settingsMode");
+    expect(settings).toContain("readonly property real wideWidth");
+    // two-column threshold sits well below the wide width: space() shrinks with
+    // density while the panel padding does not, and a near-equal pair stacked
+    expect(settings).toContain("width >= root.space(700) ? 2 : 1");
+    expect(popout).toContain("view.settingsWide ? view.settingsWideWidth : Style.space(440)");
+    expect(widget).toContain("function panelsettings(page: string): string");
+  });
+
+  test("previewable compose drafts show the image, other files show the name", () => {
+    expect(panel).toContain("readonly property bool draftIsImage");
+    // the pill stays for non-images and while the preview decodes; a decoded
+    // image replaces it (and a broken file falls back to the pill)
+    expect(panel).toContain("visible: !(root.draftIsImage && draftImage.status === Image.Ready)");
+    expect(panel).toContain("visible: root.draftIsImage && draftImage.status === Image.Ready");
+    const draftImage = panel.slice(panel.indexOf("id: draftImage"), panel.indexOf("id: draftImage") + 900);
+    expect(draftImage).toContain("autoTransform: true");
+    expect(draftImage).toContain("fillMode: Image.PreserveAspectFit");
+  });
+
+  test("pinned tiles center the avatar and name inside their outline", () => {
+    expect(panel).toContain("implicitHeight: pinContent.implicitHeight + root.space(12)");
+    expect(panel).toContain("id: pinContent");
+    expect(panel).not.toContain("pinAvatarSize + root.space(38)");
   });
 
   test("coalesced chat aliases load one history and clear one logical unread state", () => {
@@ -221,15 +325,19 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("MANAGE MAC CONTACTS");
     expect(identitySettings).toContain("This never creates a Blip display-name preference.");
     expect(identitySettings).toContain("Skip this when you only want to deduplicate Contacts.");
+    // side-by-side workflow cards share the taller card's height, and each
+    // card's action pins to the bottom right through a flexible spacer
+    expect(identitySettings).toContain("Math.max(manageTask.implicitHeight, namingTask.implicitHeight)");
+    expect(identitySettings.split("Item { Layout.fillHeight: true }").length - 1).toBeGreaterThanOrEqual(2);
     expect(identitySettings).toContain("OPTIONAL BLIP DISPLAY NAME");
     expect(identitySettings).toContain("Save Contacts name as display preference");
     expect(identitySettings).toContain("CUSTOM BLIP-ONLY DISPLAY NAME");
-    expect(identitySettings).toContain("This selection is not written to identities.json.");
+    expect(identitySettings).toContain("it is temporary, never saved, and changes nothing in Contacts.");
     expect(identitySettings).toContain("Viewing or opening a card makes no change");
     expect(identitySettings).toContain("CHOOSE A CONVERSATION TO REVIEW");
     expect(identitySettings.indexOf("WHY THEY ARE HERE"))
-      .toBeLessThan(identitySettings.indexOf("FIND CONTACTS CLEANUP OPPORTUNITIES"));
-    expect(identitySettings.indexOf("FIND CONTACTS CLEANUP OPPORTUNITIES"))
+      .toBeLessThan(identitySettings.indexOf("FIND CONTACT CLEANUP OPPORTUNITIES"));
+    expect(identitySettings.indexOf("FIND CONTACT CLEANUP OPPORTUNITIES"))
       .toBeLessThan(identitySettings.indexOf("CHOOSE A CONVERSATION TO REVIEW"));
     expect(identitySettings.indexOf("CHOOSE A CONVERSATION TO REVIEW"))
       .toBeLessThan(identitySettings.indexOf("model: root.unresolved"));
@@ -257,8 +365,33 @@ describe("QML safety invariants", () => {
   });
 
   test("contact cleanup scan is read-only triage, never a bulk merge", () => {
-    expect(identitySettings).toContain("FIND CONTACTS CLEANUP OPPORTUNITIES");
+    expect(identitySettings).toContain("FIND CONTACT CLEANUP OPPORTUNITIES");
     expect(identitySettings).toContain("Run a read-only Mac Contacts scan");
+    // every Contacts mutation announces itself, and a finished scan refreshes
+    // quietly without clobbering the mutation's success notice
+    expect(identities).toContain("signal contactsMutated()");
+    expect(identities.split("contactsMutated()").length - 1).toBeGreaterThanOrEqual(5);
+    expect(identities).toContain('if (!quietAudit) notice = result.cached === true');
+    // a fingerprint cache hit reports freshness instead of a fake re-scan
+    expect(identities).toContain("Contacts hasn't changed since the last scan");
+    // the contacts page loads cleanup results on open (cheap when cached)
+    expect(identitySettings).toContain("function maybeAutoAudit()");
+    expect(identitySettings).toContain("root.resolver.auditContacts(root.reviewHandles(), true)");
+    // the scan runs on its OWN process, kicked immediately after a mutation,
+    // so it never contends with navigation or edits; the list page shows the
+    // in-flight state while previous results stay visible
+    expect(identities).toContain("id: auditWorker");
+    expect(identities).toContain("property bool auditRunning");
+    expect(identities).toContain("function consumeAudit(text)");
+    // in-flight scans animate a three-dot indicator (width-stable, monospace)
+    expect(identitySettings).toContain('"Scanning" + root.animatedDots');
+    // busy notices ("Consolidating the verified source cards…") animate too
+    expect(identitySettings).toContain('String(root.resolver.notice).replace(/…$/, "") + root.animatedDots');
+    expect(identitySettings).toContain("property int scanDotPhase");
+    // stale results gray out while a re-scan is in flight
+    expect(identitySettings).toContain("readonly property bool staleWhileScanning");
+    // dimming covers the cleanup-opportunities results AND the review list
+    expect(identitySettings.split("root.staleWhileScanning ? 0.45 : 1").length - 1).toBeGreaterThanOrEqual(7);
     expect(identitySettings).toContain("likely duplicates");
     expect(identitySettings).toContain("naming conflicts");
     expect(identitySettings).toContain("Review duplicate…");
@@ -266,16 +399,18 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Focus on ");
     expect(identitySettings).toContain("Every contact change still opens its own preview and confirmation.");
     expect(identitySettings).not.toContain("Merge all");
-    expect(identities).toContain("function auditContacts(handles)");
-    expect(identities).toContain('currentOperation === "audit"');
+    expect(identities).toContain("function auditContacts(handles, quiet)");
+    expect(identities).toContain('auditWorker.command = ["bun", helperPath, "audit"]');
     expect(identityHelper).toContain('operation === "audit"');
   });
 
   test("settings navigation keeps contact repair compact and separate from appearance", () => {
-    expect(settings).toContain('property string page: "contacts"');
+    expect(settings).toContain('property string page: "appearance"');
     expect(settings).toContain('visible: root.page === "contacts"');
     expect(settings).toContain('visible: root.page === "appearance"');
-    expect(settings).toContain('root.page === "appearance" ? 1320 : 1120');
+    // appearance spans the full window; contacts keeps a readable measure
+    expect(settings).toContain('? parent.width');
+    expect(settings).toContain('Math.min(parent.width, root.space(1120))');
     expect(identitySettings).toContain('label: "← All conversations"');
     expect(identitySettings).toContain("visible: !root.reviewActive");
     expect(identitySettings).toContain("visible: root.macReviewExpanded");
@@ -296,7 +431,16 @@ describe("QML safety invariants", () => {
   });
 
   test("Mac contact writes require preview, confirmation, and expose undo", () => {
-    expect(identitySettings).toContain('label: "Remove this handle…"');
+    expect(identitySettings).toContain('label: "Remove this " + root.handleNoun() + "…"');
+    // the undo offer shows only in the workspace of the contact it changed
+    expect(identitySettings).toContain("root.handleKey(root.resolver.undoHandle)");
+    // the conflict flow speaks in outcomes, not implementation terms: picking
+    // a person opens their cards; "session"/identities.json stay out of it
+    expect(identitySettings).toContain('"WORKING ON: "');
+    expect(identitySettings).toContain("Work on this person");
+    expect(identitySettings).toContain("Pick a person below. That only opens their cards for review");
+    expect(identitySettings).not.toContain("Select for this session");
+    expect(identitySettings).not.toContain("SELECTED FOR THIS SESSION");
     expect(identitySettings).toContain('label: "Remove from Mac Contacts"');
     expect(identitySettings).toContain("An undo receipt will be saved on the Mac");
     expect(identitySettings).toContain('label: "Undo Mac change"');
@@ -331,7 +475,7 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("sourceCard.modelData.sourceName");
     expect(contactCompare).toContain("Text.PlainText");
     expect(contactCompare).not.toContain("Array.isArray(card.phones)");
-    expect(identities).toContain("function compareCards(handle, ownerToken)");
+    expect(identities).toContain("function compareCards(handle, ownerToken, otherOwnerToken)");
     expect(identities).toContain("function prepareLink()");
     expect(identities).toContain("function linkCards()");
     expect(identities).toContain("linkPreview.ready");
@@ -340,9 +484,24 @@ describe("QML safety invariants", () => {
 
   test("the contact workspace edits, deletes, and consolidates only after preview", () => {
     expect(contactCompare).toContain("ContactCardEditor");
+    // one card = nothing to consolidate; when another NAME shares the handle,
+    // the section points at the rename-then-merge path instead of dead-ending
+    expect(contactCompare).toContain("SAME PERSON UNDER ANOTHER NAME?");
+    // explicit cross-name merge: both owner tokens travel end to end, and the
+    // cross scope is merge-only (no per-card edit/delete, no link section)
+    expect(identities).toContain("property string comparisonOtherOwnerToken");
+    expect(identities).toContain("function compareCards(handle, ownerToken, otherOwnerToken)");
+    expect(identities.split('String(comparison.otherOwnerToken || "") !== ""').length - 1).toBeGreaterThanOrEqual(3);
+    expect(contactCompare).toContain("readonly property bool crossMerge");
+    expect(identitySettings).toContain('label: "Merge with " + (root.selectedCandidate ? root.selectedCandidate.name : "") + "…"');
+    // "handle" stays internal vocabulary; the UI says number/email
+    expect(identitySettings).toContain("function handleNoun()");
+    expect(identitySettings).toContain('label: "Remove this " + root.handleNoun() + "…"');
+    expect(identitySettings).not.toContain('"Remove this handle…"');
+    expect(contactCompare.split("root.comparison.cardCount > 1").length - 1).toBeGreaterThanOrEqual(3);
     expect(contactCompare).toContain("Merge into \" + modelData.sourceName");
     expect(panel).toContain('iconText: "⚙"');
-    expect(panel).toContain('tooltipText: "Settings"\n            bordered: false');
+    expect(panel).toContain('tooltipText: "Settings"\n              bordered: false');
     expect(panel).toContain('iconText: "＋"');
     expect(panel).toContain('tooltipText: "New message (n)"\n            bordered: false');
     expect(contactEditor).toContain("Review changes…");

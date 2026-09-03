@@ -594,7 +594,8 @@ BarWidget {
   // ------------------------------------------------------------ IPC
   // IPC that sends or reads message content is a deputy for any local
   // process (Codex audit #3). It is opt-in: automation=on in bridge.conf.
-  // status/open/close/toggle/window/app/settings stay available — they expose nothing.
+  // status/open/close/toggle/window/app/settings/panelsettings stay
+  // available — they expose nothing.
   property bool automationOn: false
   readonly property string automationOff: "blip: automation=off — set automation=on in ~/.config/blip/bridge.conf to allow ipc send/read"
   FileView {
@@ -633,6 +634,10 @@ BarWidget {
     function app(): string { root.showApp(); return "app shown + focused" }
     function settings(): string { root.showSettings(); return "settings shown" }
     function appearance(): string { root.showSettings("appearance"); return "appearance settings shown" }
+    // Same pages inside the POPOUT (the window keeps `settings`/`appearance`).
+    function panelsettings(page: string): string {
+      return panelLoader.item ? panelLoader.item.openSettings(page) : "no panel"
+    }
     function windowgoto(chat: string): string {
       if (!root.automationOn) return root.automationOff
       root.ensureWindow()

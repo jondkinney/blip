@@ -2,6 +2,187 @@
 
 ## Unreleased
 
+- Recover consolidations through Contacts.app when CNContactStore faults:
+  some real synced cards hold a damaged stored row that fails EVERY native
+  write or deletion with Cocoa 134092 while Contacts.app's own path still
+  works. Native failures now report their stage machine-readably, and the
+  pipeline finishes the exact reviewed plan through the app: setCard for the
+  survivor, a guarded delete-fallback for already-confirmed source cards.
+  Along the way two Contacts scripting regressions on current macOS were
+  fixed: adding entries via the add-to-person Apple event errors with "No
+  error. (0)" (entries now push onto the person's collection specifiers,
+  which also un-breaks undo/restore), and add-only collection edits no
+  longer remove-and-recreate every entry — existing fields keep their stable
+  ids and damaged rows stay untouched.
+- Fix the persistent consolidation failure (Cocoa 134092 at "update
+  survivor"): rebuilding a card's phone/email collections forces contactsd to
+  fault out and delete every existing value row, and one damaged stored row
+  fails the whole save — every time, not transiently. The native writer now
+  REUSES the card's own labeled values when label+value are unchanged and
+  leaves an equal birthday untouched (a synced birthday carries
+  calendar/timezone the draft's bare components lack). Compounding it,
+  Contacts.app's scripting layer reports unlabeled values under default kind
+  names ("Email", "Phone"), so drafts could never match — and silently
+  gained literal custom labels; those names now normalize back to unlabeled.
+  Verified live: an update sending a card's exact current values failed on
+  every attempt before, succeeds after.
+- Fix contact consolidation failing with "Contacts could not save this card
+  in its source account" and "Contacts changed the merged card while saving
+  it". Two real defects, both verified live against synthetic replica cards:
+  saves can throw a transient Cocoa 134092 while contactsd refreshes CardDAV
+  accounts (Blip's own preflight launches Contacts.app, which triggers those
+  refreshes), so every mutating stage in contact-delete.swift now retries on
+  a fresh store session; and the post-save verification read Contacts.app's
+  stale view immediately after a CNContactStore commit, so it now settle-polls
+  before comparing. Residual failures name their stage and error code.
+- Bubble right-clicks now offer only Copy message; Copy vCard and Edit
+  contact live where the click names a person — the pinned tiles and the
+  conversation rows in the sidebar.
+- Fix contact editors opening with empty phone/email/address lists right
+  after a merge: Contacts.app's long-lived process serves STALE person
+  objects after external store changes (collections vanish while scalars
+  still read), and a draft seeded from that view would propose deleting the
+  fields. Every describe is now cross-checked against fresh CNContactStore
+  collection counts (new native "counts" op) and retried until the app's
+  view settles, failing honestly if it never does.
+- Animate the busy notices too: any in-flight operation's footer message
+  ("Consolidating the verified source cards…", "Saving…", "Verifying…")
+  cycles its ellipsis as the same three-dot indicator, and the graying now
+  also covers the Find-contact-cleanup-opportunities results (summary
+  counts, duplicate/conflict rows, footnotes), not just the review list.
+- Gray out the stale cleanup results (review rows and the summary line) at
+  45% opacity while a re-scan is in flight, fading back when the fresh
+  results land; a first scan with nothing stale dims nothing.
+- Animate a three-dot progress indicator on the Scan button while a cleanup
+  scan is in flight (width-stable in the monospace face, so the button never
+  jitters).
+- Fix "Contacts could not update email addresses: Message not understood"
+  during merge recovery: the third broken Contacts scripting event on
+  current macOS — remove-entry-from-person — surfaced whenever the
+  Contacts.app fallback had to REPLACE a collection (e.g. a survivor whose
+  email carried a different label than the merged draft). Field removal now
+  deletes the entry specifier, which works; this also repairs the
+  "Remove this number/email" flow, which used the same broken event.
+- Skip the full cleanup scan when nothing changed: the Mac now answers a
+  cheap store fingerprint (per-account row count + newest modification
+  stamp), every scan result is cached with the fingerprint it was taken
+  under (~/.local/state/blip/audit-cache.json, bounded and owner-only), and
+  a scan request whose conversation set matches first pays one fast
+  round-trip — unchanged store means the cached cleanup opportunities load
+  instantly, including across shell restarts. The contacts page now loads
+  results automatically on open, and a cache hit says "Cleanup results are
+  current" instead of pretending to re-scan.
+- Run the cleanup re-scan on its own dedicated process, kicked off the
+  moment a merge/edit/delete lands instead of waiting for the review to
+  close. Scans no longer contend with navigation or further edits, the Scan
+  button shows "Scanning…" while a query is in flight, and the previous
+  results stay visible until the fresh ones land (they used to vanish during
+  every scan).
+- Order the cross-name merge union by the same largest-account-first rule as
+  every other view; it was concatenating the selected person's cards first.
+- Fix the cross-name merge silently opening a one-card comparison instead:
+  identities.ts (the Linux broker that bounds every Mac request) did not
+  know the otherOwnerToken field and dropped it; it now validates and
+  forwards it for compare, merge-prepare, and merge, rejecting a duplicate
+  token.
+- Add cross-name merging for conflicting cards: when two differently-named
+  people share a number or email (a married-name change, say), the other
+  person's row now offers "Merge with <selected person>…". It opens the
+  standard compare/merge workspace spanning BOTH people's cards — pick the
+  survivor and adjust the name in the review. The scope requires both owner
+  tokens explicitly, is merge-only (per-card edit/delete and linking keep
+  single-person authority), renumbers accounts over the union, and reuses
+  the same revisions, plan hash, and undo receipt as same-name merges.
+- Say "number"/"email" instead of "handle" in the conflict flow: the removal
+  button reads "Remove this number…"/"Remove this email…", and the picker,
+  row kickers, and explainers follow suit.
+- Fix compare-view account labels de-aligning from the card list: the
+  account-ordering change re-sorted one of two positionally-linked lists.
+- Stop the consolidate section from dead-ending on single-card people: with
+  one source card the section (header, merged preview) is hidden, and when a
+  DIFFERENT name shares the handle it is replaced by "Same person under
+  another name?" guidance naming the other candidate and the exact
+  rename-then-merge steps.
+- Fix "← All conversations" doing nothing right after a completed merge:
+  the automatic cleanup re-scan started immediately and occupied the single
+  bridge worker, and review dismissal silently refuses while the worker runs.
+  The re-scan now waits until the review is closed (the only place its
+  results are visible), and a running scan no longer blocks dismissal.
+- Order source accounts by size everywhere cards are numbered and compared:
+  the account with the most contacts is always card 1 (leftmost), instead of
+  whichever store's folder name happened to sort first — so iCloud vs Gmail
+  no longer swap sides between contacts.
+- Stop reporting "Contacts changed the merged card while saving it" for
+  merges that applied perfectly: the post-save verification demanded the
+  read-back match the reviewed draft byte-for-byte, but the writer reuses a
+  card's existing rows and appends additions, so collections can read back
+  in a different order. Verification now compares content order-insensitively
+  and waits out busy-sync windows longer (6s instead of 3.2s).
+- Reword the conflicting-names flow in outcome language: the picker now says
+  Contacts has different people named for this handle and that picking one
+  only opens their cards for review (temporary, never saved, changes
+  nothing), the button reads "Work on this person…" instead of "Select for
+  this session", the selected banner reads "Working on", and the explainers
+  name the follow-up actions — edit cards, merge duplicates, or remove the
+  handle from the wrong card. identities.json no longer appears in this flow.
+- Scope the post-change undo offer to the contact it changed: one person's
+  merge receipt no longer follows the user into another person's workspace.
+  The receipt itself is unchanged — returning to that contact in the same
+  session still offers the undo.
+- Refresh the contact cleanup scan automatically after any Mac Contacts
+  change (merge, edit, delete, link, field removal, undo): a finished scan
+  re-runs quietly with the same conversation set, without clobbering the
+  mutation's success notice. The section heading is now singular ("Find
+  contact cleanup opportunities").
+- Equalize the two contact workflow cards ("Manage Mac Contacts" and the
+  optional display preference): shown side by side they now share the taller
+  card's height instead of ending at different edges, and each card's action
+  button pins to the bottom-right corner instead of floating mid-card.
+- Fix group right-clicks always reporting "No contact person is available":
+  the participants list crosses a QML property boundary as a QVariantList,
+  for which Array.isArray() is false, so the per-person menu never saw it.
+  Participant iteration now indexes by length instead of gating on isArray.
+- The appearance page now uses the full window: the live preview fills the
+  available space (fit by both width and height, centered) and the controls
+  pin to the right edge at a fixed measure. The preview now depicts the app
+  window's default 1040×720 geometry instead of the live window — mirroring
+  the live window made 100% structurally impossible — and reaches a
+  pixel-true 100% (never upscaling past it) whenever the workspace has room.
+- A previewable pasted or dropped attachment (png/jpg/gif/webp/bmp/svg) shows
+  the image itself in the compose chip; non-previewable files like a vCard
+  keep the filename pill, which also remains the fallback while a preview
+  decodes or if it fails.
+- Open settings on the Appearance tab, now listed first; editing a contact
+  still jumps straight to Contacts. The live app preview is now a true
+  miniature: the whole mock window is laid out at real app dimensions (raw-px
+  sidebar, spaceReal avatars, the window's own gutters) and shrunk by one
+  uniform scale transform, replacing the old per-part approximations.
+- Center the avatar and name inside pinned-conversation tiles: the tile now
+  sizes itself to its content with even padding instead of a fixed tail that
+  left extra space under the label.
+- Make chronological sidebar rows contiguous: each row absorbs half the old
+  inter-row gap, so the hover highlight fills the whole area up to the
+  hairline separator instead of stopping short of it. Separators touching a
+  hovered or selected row hide so the highlight reads as one clean block.
+- Keep the settings page still while dragging appearance sliders: the page's
+  own chrome uses scale values frozen at open, and only the live preview
+  (plus the app behind it) tracks the moving density/font/corner values.
+- Stop the contacts tab hint from stretching settings past the narrow popout
+  width — it now elides instead of forcing an unbounded implicit width.
+- Move the popout's new-message and open-app-window buttons into the header,
+  upper right beside the gear, ordered by function: start a conversation,
+  promote to the app window, then settings.
+- Double the popout's width (and give it a little extra height) while the
+  appearance settings page is showing, so the live preview sits beside the
+  controls instead of stacking above them. New `panelsettings <page>` IPC
+  opens the settings pages inside the popout the way `settings`/`appearance`
+  do for the window. The wide panel now covers the contacts pages too — the
+  review/compare workflows need the room, and one width means no resize jump
+  when switching tabs. The two-column threshold dropped to space(700) with
+  smaller column minimums: the old 940 threshold sat too close to the wide
+  popout width (both shrink with density while the panel padding does not,
+  so low density flipped it back to stacked) and above what a narrow app
+  window can offer.
 - Preserve the natural aspect ratio of tall link-preview artwork, allow cards
   to grow beyond the old shallow banner cap, and render tapback reactions on
   unfurled cards. Conversation headers now use Messages' pinned group title,

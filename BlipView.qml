@@ -144,6 +144,15 @@ FocusScope {
   // Compose draft attachment (one per message in v1).
   property string draftPath: ""
   property string draftLabel: ""
+  // A previewable draft shows the picture itself in the compose chip; other
+  // files (a pasted vCard, a PDF) keep the filename pill. Local pastes and
+  // drops are trusted files the user just chose, so the extension decides.
+  readonly property bool draftIsImage: {
+    var dot = draftPath.lastIndexOf(".")
+    if (dot < 0) return false
+    return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
+      .indexOf(draftPath.slice(dot + 1).toLowerCase()) !== -1
+  }
   // What the in-flight file send / paste belong to, so late completions
   // can't clobber a NEWER draft or land in a DIFFERENT conversation.
   property string sendDraftPath: ""
@@ -241,6 +250,12 @@ FocusScope {
   property string bubblesJson: ""       // last rendered bubbles, for no-op reload detection
   property bool firstLoad: true         // first load of the open thread pins to bottom
   property bool settingsMode: false
+  // The popout doubles its width for the whole settings surface: appearance
+  // puts the preview beside the controls, and the contacts review/compare
+  // workflows need the same room. One width also means no resize jump when
+  // switching between the tabs.
+  readonly property bool settingsWide: settingsMode
+  readonly property real settingsWideWidth: settingsView.wideWidth
   property string pendingThreadChat: "" // latest chat requested while it runs
   property var pendingThreadAliases: [] // historical ids coalesced into that chat
   property var threadRunningAliases: []
@@ -339,8 +354,14 @@ FocusScope {
       add(thread.handle || thread.chat, thread.pin_name || thread.name || thread.chat)
       return result
     }
-    var participants = Array.isArray(thread.participants) ? thread.participants : []
-    for (var i = 0; i < participants.length; i++) {
+    // The thread model crosses QML property boundaries, where a nested JS
+    // array can surface as a QVariantList — length-indexable but
+    // Array.isArray() === false. Never gate on isArray here (proved by the
+    // journald breadcrumb 2026-09-03: group=true, typeof object, isArray
+    // false — every group menu came up empty).
+    var participants = thread.participants || []
+    var participantCount = Number(participants.length) || 0
+    for (var i = 0; i < participantCount; i++) {
       var person = participants[i]
       if (typeof person === "string") add(person, person)
       else add(person && person.handle, person && person.name)
@@ -365,19 +386,31 @@ FocusScope {
     contactToastError = failed === true
     contactToastTimer.restart()
   }
-  function openContactContext(thread, messageText) {
+  // Bubble right-clicks stay about the MESSAGE (copy); contact actions live
+  // only on the sidebar rows and pinned tiles, where the click names a
+  // person rather than a conversation transcript.
+  function openMessageContext(messageText) {
+    contextMessageText = String(messageText || "")
+    if (contextMessageText === "") return
+    messageOnlyMenu.popup()
+  }
+  function openContactContext(thread) {
     var people = contactPeople(thread)
     contextPeople = people
-    contextMessageText = String(messageText || "")
-    if (people.length === 0 && contextMessageText === "") {
+    contextMessageText = ""
+    if (people.length === 0) {
+      // Breadcrumb (journald): a GROUP landing here means its participants
+      // never reached the thread model — log shape, never content.
+      console.log("[blip] contact menu empty: group="
+        + isGroupId(String(thread && thread.chat || ""))
+        + " participantsType=" + (typeof (thread && thread.participants))
+        + " participantsLength="
+        + Number(thread && thread.participants && thread.participants.length || -1))
       showContactToast("No contact person is available for this conversation", true)
       return
     }
-    if (people.length === 0) messageOnlyMenu.popup()
-    else if (people.length === 1)
-      (contextMessageText === "" ? directContactMenu : directMessageMenu).popup()
-    else
-      (contextMessageText === "" ? groupContactMenu : groupMessageMenu).popup()
+    if (people.length === 1) directContactMenu.popup()
+    else groupContactMenu.popup()
   }
   function copyContactVCard(person) {
     if (!person || !isContactHandle(person.handle)) return
@@ -459,7 +492,7 @@ FocusScope {
     exitSearch()
     exitNew()
     settingsMode = true
-    settingsView.showPage(String(page || "contacts") === "appearance" ? "appearance" : "contacts")
+    settingsView.showPage(String(page || "appearance") === "contacts" ? "contacts" : "appearance")
     Qt.callLater(settingsView.focusDefault)
   }
 
@@ -1235,6 +1268,11 @@ FocusScope {
   property bool splitView: false
   property int sidebarWidth: preferences ? preferences.sidebarWidth : 320
   readonly property bool listShowing: splitView || !inThread
+  // The app's two panes share one header track. Keeping it independent of
+  // whether a conversation has metadata prevents the separator and body from
+  // jumping when the first conversation is selected.
+  readonly property real splitHeaderHeight: Math.ceil(Math.max(
+    Style.font.title + Style.font.caption + Style.space(4), root.space(34)))
 
   RowLayout {
     anchors.fill: parent
@@ -1257,11 +1295,16 @@ FocusScope {
         anchors.rightMargin: root.splitView ? root.space(18) : 0
         anchors.topMargin: root.splitView ? root.space(10) : 0
         anchors.bottomMargin: root.splitView ? root.space(10) : 0
-        spacing: root.space(root.splitView ? 14 : 8)
+        spacing: root.space(8)
         RowLayout {
           Layout.fillWidth: true
+          Layout.preferredHeight: root.splitView
+            ? root.splitHeaderHeight
+            : Math.max(sidebarHero.implicitHeight, headerActions.implicitHeight)
           spacing: root.space(8)
           PanelHero {
+            id: sidebarHero
+            visible: !root.splitView
             Layout.fillWidth: true
             title: "Blip"
             meta: (!root.online
@@ -1271,16 +1314,83 @@ FocusScope {
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
-          PanelActionButton {
-            focusable: true
-            iconText: "⚙"
-            tooltipText: "Settings"
-            bordered: false
-            foreground: root.foreground
-            hoverColor: root.accent
-            fontFamily: root.fontFamily
-            fontSize: root.fontSize(Style.font.icon)
-            onClicked: root.openSettings()
+
+          // The wide app uses a single line so its rule aligns with the
+          // conversation pane. The popout keeps PanelHero's stacked status.
+          RowLayout {
+            visible: root.splitView
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+            spacing: root.space(8)
+            Text {
+              text: "Blip"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+            }
+            Text {
+              Layout.fillWidth: true
+              text: (!root.online
+                    ? "MAC UNREACHABLE — BRIDGE OFFLINE"
+                    : (root.unread > 0 ? root.unread + " UNREAD" : "ALL CAUGHT UP"))
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+            }
+          }
+          // Popout header actions, ordered by function: start a conversation,
+          // promote to the app window, then configuration — the gear stays
+          // rightmost on both surfaces. Real buttons (PanelActionButton, the
+          // stock panels' control): a hand-rolled Text+MouseArea version lost
+          // its clicks to the panel's dismiss layer and CLOSED the panel.
+          RowLayout {
+            id: headerActions
+            Layout.alignment: Qt.AlignVCenter
+            spacing: root.space(4)
+            PanelActionButton {
+              visible: !root.splitView && root.online && root.listShowing
+                       && !root.newMode && !root.searchShowing
+              iconText: "＋"
+              tooltipText: "New message (n)"
+              bordered: false
+              foreground: root.foreground
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              fontSize: root.fontSize(Style.font.icon)
+              onClicked: root.startNew()
+            }
+            // Open the full app window. Hidden in the app itself (it IS the
+            // window) and in the search/new views, like ＋.
+            PanelActionButton {
+              visible: !root.splitView && root.online && root.listShowing
+                       && !root.newMode && !root.searchShowing
+              iconText: "⇱"
+              tooltipText: "Open the app window (SUPER+M)"
+              bordered: false
+              foreground: root.foreground
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              fontSize: root.fontSize(Style.font.icon)
+              onClicked: root.openApp()
+            }
+            PanelActionButton {
+              id: sidebarSettings
+              focusable: true
+              iconText: "⚙"
+              tooltipText: "Settings"
+              bordered: false
+              foreground: root.foreground
+              hoverColor: root.accent
+              fontFamily: root.fontFamily
+              fontSize: root.fontSize(Style.font.icon)
+              onClicked: root.openSettings()
+            }
           }
         }
 
@@ -1291,6 +1401,10 @@ FocusScope {
           id: threadFlick
           Layout.fillWidth: true
           Layout.fillHeight: true
+          // Match the search-to-pins gap below. This margin belongs to the
+          // sidebar body rather than the shared header track, so both pane
+          // separators remain aligned.
+          Layout.topMargin: root.splitView ? root.space(6) : 0
           contentWidth: width
           contentHeight: listContent.implicitHeight
           clip: true
@@ -1326,7 +1440,12 @@ FocusScope {
           ColumnLayout {
             id: listContent
             width: parent.width
-            spacing: root.inThread ? root.space(2) : root.space(root.splitView ? 10 : 6)
+            // Selecting a conversation must not compact or move the sidebar.
+            // In split view, 10 units plus the pinned section's 4-unit margin
+            // mirrors the 8 + 6 units above the search field.
+            spacing: root.splitView
+              ? root.space(10)
+              : root.space(root.inThread ? 2 : 6)
 
             // ------------------------------------------------- OFFLINE
             Text {
@@ -1358,8 +1477,10 @@ FocusScope {
             // ---------------------------------------------- LIST VIEW
             RowLayout {
               Layout.fillWidth: true
+              // The ＋/⇱ buttons live in the header now; this row remains for
+              // the search/new section label and the mark-all-read action.
               visible: root.online && root.listShowing
-                       && (root.newMode || root.searchShowing || !root.splitView || root.unread > 0)
+                       && (root.newMode || root.searchShowing || root.unread > 0)
               PanelSectionHeader {
                 Layout.fillWidth: true
                 visible: root.newMode || root.searchShowing
@@ -1367,33 +1488,6 @@ FocusScope {
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: root.fontSize(Style.font.caption)
-              }
-              // A real button (PanelActionButton = the stock panels' control).
-              // The hand-rolled Text+MouseArea version lost its clicks to the
-              // panel's dismiss layer — clicking it CLOSED the panel.
-              PanelActionButton {
-                visible: !root.newMode && !root.searchShowing && !root.splitView
-                iconText: "＋"
-                tooltipText: "New message (n)"
-                bordered: true
-                foreground: root.foreground
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                fontSize: root.fontSize(Style.font.icon)
-                onClicked: root.startNew()
-              }
-              // Open the full app window. Hidden in the app itself (it IS the
-              // window) and in the split/search/new views, like ＋.
-              PanelActionButton {
-                visible: !root.newMode && !root.searchShowing && !root.splitView
-                iconText: "⇱"
-                tooltipText: "Open the app window (SUPER+M)"
-                bordered: true
-                foreground: root.foreground
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                fontSize: root.fontSize(Style.font.icon)
-                onClicked: root.openApp()
               }
               // Local only: moves readMark/readMarks in state.json so the
               // badge and dots clear. Nothing is written back to the Mac —
@@ -1591,7 +1685,6 @@ FocusScope {
                     required property var modelData
                     required property int index
                     Layout.fillWidth: true
-                    Layout.preferredHeight: pinAvatarSize + root.space(38)
                     thread: modelData
                     selected: root.cursor === index
                   }
@@ -1610,141 +1703,169 @@ FocusScope {
               wrapMode: Text.WordWrap
             }
 
-            Repeater {
-              model: root.online && root.listShowing && !root.searchShowing && !root.newMode ? root.regularThreads : []
-              delegate: Rectangle {
-                required property var modelData
-                required property int index
+            // Chronological rows are CONTIGUOUS: the wrapper zeroes the list
+            // spacing and each row absorbs half the old gap as inner padding,
+            // so the hover highlight fills the whole area up to the hairline
+            // separator (which sits exactly on the row boundary).
+            ColumnLayout {
+              id: chronoRows
+              Layout.fillWidth: true
+              visible: root.online && root.listShowing && !root.searchShowing && !root.newMode
+              spacing: 0
 
-                Layout.fillWidth: true
-                implicitHeight: rowRow.implicitHeight + root.space(root.splitView ? 20 : 12)
-                radius: root.corner(Style.cornerRadius)
-                color: rowHover.hovered || root.cursor === root.threadIndex(modelData)
-                  ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                  : "transparent"
+              // Which row is showing its highlight — a separator touching a
+              // highlighted row (its own, or the previous row's hairline just
+              // above it) hides so the hover shape reads as one clean block.
+              property int hoveredRow: -1
+              function rowActive(i) {
+                return chronoRows.hoveredRow === i
+                  || (i >= 0 && i < root.regularThreads.length
+                      && root.cursor === root.threadIndex(root.regularThreads[i]))
+              }
 
-                HoverHandler { id: rowHover }
-                TapHandler { onTapped: root.openThread(modelData) }
-                TapHandler {
-                  acceptedButtons: Qt.RightButton
-                  onTapped: root.openContactContext(modelData, "")
-                }
+              Repeater {
+                model: root.online && root.listShowing && !root.searchShowing && !root.newMode ? root.regularThreads : []
+                delegate: Rectangle {
+                  required property var modelData
+                  required property int index
 
-                RowLayout {
-                  id: rowRow
-                  anchors.fill: parent
-                  anchors.margins: root.space(6)
-                  spacing: root.space(8)
+                  Layout.fillWidth: true
+                  implicitHeight: rowRow.implicitHeight + root.space(root.splitView ? 30 : 18)
+                  radius: root.corner(Style.cornerRadius)
+                  color: rowHover.hovered || root.cursor === root.threadIndex(modelData)
+                    ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                    : "transparent"
 
-                  // the iMessage blue dot — present only while the thread has
-                  // unread inbound; the slot stays so names line up.
-                  Rectangle {
-                    width: root.space(9); height: width; radius: width / 2
-                    color: root.mineFill
-                    opacity: modelData.unread > 0 ? 1 : 0
+                  HoverHandler {
+                    id: rowHover
+                    onHoveredChanged: {
+                      if (hovered) chronoRows.hoveredRow = index
+                      else if (chronoRows.hoveredRow === index) chronoRows.hoveredRow = -1
+                    }
+                  }
+                  TapHandler { onTapped: root.openThread(modelData) }
+                  TapHandler {
+                    acceptedButtons: Qt.RightButton
+                    onTapped: root.openContactContext(modelData)
                   }
 
-                  // avatar circle — the contact's photo when Contacts has one,
-                  // initials otherwise (the iMessage sidebar look)
-                  Rectangle {
-                    id: avatarCircle
-                    width: Math.max(1, Math.round(Style.spaceReal(root.avatarSize))); height: width; radius: width / 2
-                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-                    // A group binds to ITS OWN chat id (its Messages group photo); a DM to
-                    // the person. Binding a group to `handle` showed whoever spoke last —
-                    // their cached contact photo one minute, initials the next.
-                    readonly property string avatarHandle: root.isGroupId(String(modelData.chat || "")) ? String(modelData.chat) : String(modelData.handle || modelData.chat || "")
-                    Component.onCompleted: root.requestAvatar(avatarHandle)
-                    Image {
-                      id: avatarImg
-                      anchors.fill: parent
-                      visible: false
-                      source: root.avatarFiles[avatarCircle.avatarHandle] || ""
-                      asynchronous: true
-                      fillMode: Image.PreserveAspectCrop
-                      autoTransform: true
-                      sourceSize.width: 96
-                      sourceSize.height: 96
-                      // a stale/corrupt cache file → initials, and no retry this session
-                      onStatusChanged: if (status === Image.Error && avatarCircle.avatarHandle !== "") {
-                        var m = Object.assign({}, root.avatarFiles); m[avatarCircle.avatarHandle] = ""; root.avatarFiles = m
+                  RowLayout {
+                    id: rowRow
+                    anchors.fill: parent
+                    anchors.margins: root.space(6)
+                    spacing: root.space(8)
+
+                    // the iMessage blue dot — present only while the thread has
+                    // unread inbound; the slot stays so names line up.
+                    Rectangle {
+                      width: root.space(9); height: width; radius: width / 2
+                      color: root.mineFill
+                      opacity: modelData.unread > 0 ? 1 : 0
+                    }
+
+                    // avatar circle — the contact's photo when Contacts has one,
+                    // initials otherwise (the iMessage sidebar look)
+                    Rectangle {
+                      id: avatarCircle
+                      width: Math.max(1, Math.round(Style.spaceReal(root.avatarSize))); height: width; radius: width / 2
+                      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                      // A group binds to ITS OWN chat id (its Messages group photo); a DM to
+                      // the person. Binding a group to `handle` showed whoever spoke last —
+                      // their cached contact photo one minute, initials the next.
+                      readonly property string avatarHandle: root.isGroupId(String(modelData.chat || "")) ? String(modelData.chat) : String(modelData.handle || modelData.chat || "")
+                      Component.onCompleted: root.requestAvatar(avatarHandle)
+                      Image {
+                        id: avatarImg
+                        anchors.fill: parent
+                        visible: false
+                        source: root.avatarFiles[avatarCircle.avatarHandle] || ""
+                        asynchronous: true
+                        fillMode: Image.PreserveAspectCrop
+                        autoTransform: true
+                        sourceSize.width: 96
+                        sourceSize.height: 96
+                        // a stale/corrupt cache file → initials, and no retry this session
+                        onStatusChanged: if (status === Image.Error && avatarCircle.avatarHandle !== "") {
+                          var m = Object.assign({}, root.avatarFiles); m[avatarCircle.avatarHandle] = ""; root.avatarFiles = m
+                        }
                       }
-                    }
-                    Item {
-                      id: avatarMask
-                      anchors.fill: parent
-                      visible: false
-                      layer.enabled: true
-                      Rectangle { anchors.fill: parent; radius: width / 2 }
-                    }
-                    MultiEffect {
-                      anchors.fill: parent
-                      source: avatarImg
-                      visible: avatarImg.status === Image.Ready
-                      maskEnabled: true
-                      maskSource: avatarMask
-                    }
-                    Text {
-                      anchors.centerIn: parent
-                      visible: avatarImg.status !== Image.Ready
-                      text: root.avatarInitials(modelData)
-                      color: root.foreground
-                      font.family: root.fontFamily
-                      font.pixelSize: root.fontSize(Style.font.caption)
-                      font.bold: true
-                    }
-                  }
-
-                  ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: root.space(1)
-                    RowLayout {
-                      Layout.fillWidth: true
-                      spacing: root.space(6)
+                      Item {
+                        id: avatarMask
+                        anchors.fill: parent
+                        visible: false
+                        layer.enabled: true
+                        Rectangle { anchors.fill: parent; radius: width / 2 }
+                      }
+                      MultiEffect {
+                        anchors.fill: parent
+                        source: avatarImg
+                        visible: avatarImg.status === Image.Ready
+                        maskEnabled: true
+                        maskSource: avatarMask
+                      }
                       Text {
-                        Layout.fillWidth: true
-                        text: String(modelData.name || modelData.chat)
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
+                        anchors.centerIn: parent
+                        visible: avatarImg.status !== Image.Ready
+                        text: root.avatarInitials(modelData)
                         color: root.foreground
                         font.family: root.fontFamily
-                        font.pixelSize: root.fontSize(Style.font.bodySmall)
-                        font.bold: modelData.unread > 0
+                        font.pixelSize: root.fontSize(Style.font.caption)
+                        font.bold: true
+                      }
+                    }
+
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      spacing: root.space(1)
+                      RowLayout {
+                        Layout.fillWidth: true
+                        spacing: root.space(6)
+                        Text {
+                          Layout.fillWidth: true
+                          text: String(modelData.name || modelData.chat)
+                          textFormat: Text.PlainText
+                          elide: Text.ElideRight
+                          color: root.foreground
+                          font.family: root.fontFamily
+                          font.pixelSize: root.fontSize(Style.font.bodySmall)
+                          font.bold: modelData.unread > 0
+                        }
+                        Text {
+                          text: root.fmtTime(modelData.last_ts)
+                          textFormat: Text.PlainText
+                          color: modelData.unread > 0 ? root.mineFill : root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: root.fontSize(Style.font.caption)
+                        }
                       }
                       Text {
-                        text: root.fmtTime(modelData.last_ts)
+                        Layout.fillWidth: true
+                        text: (modelData.last_from_me ? "You: " : "") + String(modelData.last_text || "")
                         textFormat: Text.PlainText
-                        color: modelData.unread > 0 ? root.mineFill : root.dim
+                        elide: Text.ElideRight
+                        maximumLineCount: 1
+                        color: root.dim
                         font.family: root.fontFamily
                         font.pixelSize: root.fontSize(Style.font.caption)
                       }
                     }
-                    Text {
-                      Layout.fillWidth: true
-                      text: (modelData.last_from_me ? "You: " : "") + String(modelData.last_text || "")
-                      textFormat: Text.PlainText
-                      elide: Text.ElideRight
-                      maximumLineCount: 1
-                      color: root.dim
-                      font.family: root.fontFamily
-                      font.pixelSize: root.fontSize(Style.font.caption)
-                    }
+
                   }
 
-                }
-
-                // Messages separates chronological conversations with a
-                // hairline that begins after the avatar rather than cutting
-                // through the unread-dot/avatar gutter.
-                Rectangle {
-                  anchors.left: parent.left
-                  anchors.leftMargin: root.space(6 + 9 + 8) + avatarCircle.width + root.space(8)
-                  anchors.right: parent.right
-                  anchors.rightMargin: root.space(6)
-                  anchors.bottom: parent.bottom
-                  height: Math.max(1, Math.round(Style.spaceReal(1)))
-                  visible: index < root.regularThreads.length - 1
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+                  // Messages separates chronological conversations with a
+                  // hairline that begins after the avatar rather than cutting
+                  // through the unread-dot/avatar gutter.
+                  Rectangle {
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.space(6 + 9 + 8) + avatarCircle.width + root.space(8)
+                    anchors.right: parent.right
+                    anchors.rightMargin: root.space(6)
+                    anchors.bottom: parent.bottom
+                    height: Math.max(1, Math.round(Style.spaceReal(1)))
+                    visible: index < root.regularThreads.length - 1
+                             && !chronoRows.rowActive(index) && !chronoRows.rowActive(index + 1)
+                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+                  }
                 }
               }
             }
@@ -1778,8 +1899,13 @@ FocusScope {
         spacing: root.space(8)
         RowLayout {
           Layout.fillWidth: true
+          Layout.preferredHeight: root.splitView
+            ? root.splitHeaderHeight
+            : conversationHero.implicitHeight
           spacing: root.space(8)
           PanelHero {
+            id: conversationHero
+            visible: !root.splitView
             Layout.fillWidth: true
             // Pinned group names are Messages' user-facing title. `name` can
             // still be the opaque chatNNN id carried by message rows.
@@ -1797,11 +1923,53 @@ FocusScope {
             foreground: root.foreground
             fontFamily: root.fontFamily
           }
+
+          // Match the sidebar's fixed one-line header in the app. Keeping the
+          // title and metadata inline makes empty and selected states identical
+          // in height, so the separator, message viewport, and composer stay put.
+          RowLayout {
+            id: splitConversationHero
+            visible: root.splitView
+            Layout.alignment: Qt.AlignVCenter
+            spacing: root.space(8)
+            Text {
+              Layout.maximumWidth: Math.max(root.space(160), conversationPane.width * 0.50)
+              text: root.inThread
+                ? String(root.active.pin_name || root.active.name || root.active.chat)
+                : "Select a conversation"
+              textFormat: Text.PlainText
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+            }
+            Text {
+              Layout.maximumWidth: Math.max(root.space(120), conversationPane.width * 0.32)
+              visible: root.inThread
+              text: !root.inThread
+                ? ""
+                : (root.activeIsGroup
+                  ? (root.isSendable(root.active) ? "GROUP" : "GROUP · READ-ONLY (ID UNKNOWN)")
+                  : String(root.active.handle))
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+            }
+          }
+          Item {
+            id: conversationHeaderSpacer
+            visible: root.splitView
+            Layout.fillWidth: true
+          }
           // The app's NEW button lives up here (where "Esc = back" used to be).
           PanelActionButton {
             visible: root.splitView && !root.newMode
-            Layout.alignment: Qt.AlignTop
-            Layout.topMargin: root.space(6)
+            Layout.alignment: Qt.AlignVCenter
             iconText: "＋"
             tooltipText: "New message (n)"
             bordered: false
@@ -1920,7 +2088,7 @@ FocusScope {
 
                 TapHandler {
                   acceptedButtons: Qt.RightButton
-                  onTapped: root.openContactContext(root.active, String(modelData.text || ""))
+                  onTapped: root.openMessageContext(String(modelData.text || ""))
                 }
 
                 // day divider — "Today", "Yesterday", "Aug 28"
@@ -2423,14 +2591,14 @@ FocusScope {
                     }
 
                     // A link keeps its share action; any other bubble opens the
-                    // message/contact menu for this conversation.
+                    // copy-message menu for this conversation.
                     TapHandler {
                       acceptedButtons: Qt.RightButton
                       onTapped: function(eventPoint) {
                         var p = bubbleText.mapFromItem(bubble, eventPoint.position.x, eventPoint.position.y)
                         var l = bubbleText.hasLink ? bubbleText.linkAt(p.x, p.y) : ""
                         if (l && l !== "") root.openShare(String(l))
-                        else root.openContactContext(root.active, String(modelData.text || ""))
+                        else root.openMessageContext(String(modelData.text || ""))
                       }
                     }
 
@@ -2518,12 +2686,16 @@ FocusScope {
           foreground: root.foreground
         }
 
-        // queued attachment — one per message; ✕ removes it
+        // queued attachment — one per message; ✕ removes it. A previewable
+        // image shows itself; everything else shows its filename.
         RowLayout {
           Layout.fillWidth: true
           visible: root.inThread && root.draftPath !== ""
           spacing: 0
           Rectangle {
+            // the filename pill: non-image drafts, and images until (or
+            // unless) the preview decodes
+            visible: !(root.draftIsImage && draftImage.status === Image.Ready)
             Layout.preferredWidth: Math.ceil(draftText.implicitWidth) + root.space(18)
             Layout.preferredHeight: Math.ceil(draftText.implicitHeight) + root.space(12)
             radius: root.corner(root.space(14))
@@ -2539,6 +2711,48 @@ FocusScope {
               color: root.mineText
               font.family: root.fontFamily
               font.pixelSize: root.fontSize(Style.font.caption)
+            }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: root.clearDraft() }
+          }
+          Rectangle {
+            visible: root.draftIsImage && draftImage.status === Image.Ready
+            Layout.preferredWidth: draftImage.width + root.space(8)
+            Layout.preferredHeight: draftImage.height + root.space(8)
+            radius: root.corner(root.space(10))
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
+            border.width: 1
+            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+            clip: true
+            Image {
+              id: draftImage
+              readonly property real fit: status === Image.Ready && implicitWidth > 0 && implicitHeight > 0
+                ? Math.min(1, Math.min(root.space(240) / implicitWidth, root.space(130) / implicitHeight))
+                : 1
+              anchors.centerIn: parent
+              width: implicitWidth * fit
+              height: implicitHeight * fit
+              source: root.draftIsImage && root.draftPath !== "" ? "file://" + root.draftPath : ""
+              asynchronous: true
+              autoTransform: true
+              fillMode: Image.PreserveAspectFit
+              sourceSize.width: 512
+              sourceSize.height: 512
+            }
+            Rectangle {
+              anchors.top: parent.top
+              anchors.right: parent.right
+              anchors.margins: root.space(4)
+              width: root.space(18); height: width; radius: width / 2
+              color: Qt.rgba(0, 0, 0, 0.55)
+              Text {
+                anchors.centerIn: parent
+                text: "✕"
+                textFormat: Text.PlainText
+                color: "#ffffff"
+                font.family: root.fontFamily
+                font.pixelSize: root.fontSize(Style.font.caption)
+              }
             }
             HoverHandler { cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: root.clearDraft() }
@@ -2749,6 +2963,10 @@ FocusScope {
     property bool selected: false
     readonly property int pinAvatarSize: Math.max(
       Math.round(Style.spaceReal(root.avatarSize) * 1.75), root.space(48))
+    // The tile owns its height: avatar + name + even padding, so the
+    // hover/selection outline hugs the centered content instead of leaving
+    // a fixed-size tail below the label.
+    implicitHeight: pinContent.implicitHeight + root.space(12)
     readonly property string avatarHandle: root.isGroupId(String(thread.chat || ""))
       ? String(thread.chat)
       : String(thread.handle || thread.chat || "")
@@ -2763,8 +2981,9 @@ FocusScope {
     }
 
     Column {
-      anchors.fill: parent
-      anchors.margins: root.space(4)
+      id: pinContent
+      anchors.centerIn: parent
+      width: parent.width - root.space(8)
       spacing: root.space(4)
 
       Item {
@@ -2869,7 +3088,7 @@ FocusScope {
     TapHandler { onTapped: root.openThread(pinTile.thread) }
     TapHandler {
       acceptedButtons: Qt.RightButton
-      onTapped: root.openContactContext(pinTile.thread, "")
+      onTapped: root.openContactContext(pinTile.thread)
     }
   }
 
@@ -2919,38 +3138,8 @@ FocusScope {
   }
 
   Menu {
-    id: directMessageMenu
-    width: root.space(340)
-    MenuItem {
-      text: "Copy message"
-      onTriggered: root.copyText(root.contextMessageText)
-    }
-    MenuSeparator { }
-    MenuItem {
-      text: "Copy vCard — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
-      onTriggered: root.copyContactVCard(root.contextPeople[0])
-    }
-    MenuItem {
-      text: "Edit contact — " + String(root.contextPeople[0] && root.contextPeople[0].name || "contact")
-      onTriggered: root.editContact(root.contextPeople[0])
-    }
-  }
-
-  Menu {
     id: groupContactMenu
     width: root.space(300)
-    ContactActionSubmenu { copyAction: true }
-    ContactActionSubmenu { copyAction: false }
-  }
-
-  Menu {
-    id: groupMessageMenu
-    width: root.space(300)
-    MenuItem {
-      text: "Copy message"
-      onTriggered: root.copyText(root.contextMessageText)
-    }
-    MenuSeparator { }
     ContactActionSubmenu { copyAction: true }
     ContactActionSubmenu { copyAction: false }
   }

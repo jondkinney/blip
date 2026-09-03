@@ -52,6 +52,7 @@ Panel {
   function searchFor(query) { if (!opened) open(); return view.searchFor(query) }
   function newChatFor(query) { if (!opened) open(); return view.newChatFor(query) }
   function shareLink(url) { if (!opened) open(); return view.shareLink(url) }
+  function openSettings(page) { if (!opened) open(); view.openSettings(page); return "panel settings shown" }
 
   // ------------------------------------------------------------ panel
   KeyboardPanel {
@@ -61,15 +62,18 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: view.settingsMode ? keyCatcher : (view.inThread ? view.composeEditor : keyCatcher)
-    contentWidth: panel.fittedContentWidth(Style.space(440))
+    // Appearance settings go double-wide so the preview and controls sit
+    // side by side; every other mode keeps the compact dropdown width.
+    contentWidth: panel.fittedContentWidth(
+      view.settingsWide ? view.settingsWideWidth : Style.space(440))
     // The floor keeps the panel usable if a mode flip's relayout ever lags
     // again — search/new modes always have at least a field to show.
     contentHeight: panel.fittedContentHeight(
-      view.settingsMode ? Style.space(640)
+      view.settingsMode ? Style.space(view.settingsWide ? 760 : 640)
         : view.inThread ? Style.space(640)
         : Math.max(view.contentHeightHint,
                    (view.newMode || view.searching) ? Style.space(280) : 0),
-      Style.space(640))
+      Style.space(view.settingsWide ? 760 : 640))
 
     PanelKeyCatcher {
       id: keyCatcher

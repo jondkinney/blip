@@ -26,19 +26,41 @@ FocusScope {
   property var threads: []
   property string localError: ""
   property bool resetArmed: false
-  property string page: "contacts"
+  property string page: "appearance"
+  // The popout matches this width while settings are showing: the appearance
+  // workspace needs it for preview-beside-controls (two-column at space(700),
+  // with headroom that absorbs the panel's fixed padding at every density),
+  // and the contacts review/compare workflows need the room to function.
+  readonly property real wideWidth: space(980)
   readonly property bool editorActive: outgoingSetting.editorActive || incomingSetting.editorActive
     || identitySettings.editorActive
+
+  // The page's own chrome must not re-lay-out while the user drags an
+  // appearance slider — only the live preview tracks the moving values.
+  // Chrome scales are frozen each time settings opens.
+  property real chromeFontScale: 1.0
+  property real chromeDensity: 1.0
+  property real chromeCornerScale: 1.0
+  function freezeChrome() {
+    chromeFontScale = fontScale
+    chromeDensity = density
+    chromeCornerScale = cornerScale
+  }
+  onVisibleChanged: if (visible) freezeChrome()
+  Component.onCompleted: freezeChrome()
 
   signal closeRequested()
   signal vcardFinished(string message, bool success)
 
-  function fontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
-  function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
-  function corner(value) { return Math.max(0, Math.round(value * cornerScale)) }
+  function fontSize(value) { return Math.max(1, Math.round(value * chromeFontScale)) }
+  function space(value) { return Math.max(1, Math.round(Style.spaceReal(value) * chromeDensity)) }
+  function corner(value) { return Math.max(0, Math.round(value * chromeCornerScale)) }
+  function liveFontSize(value) { return Math.max(1, Math.round(value * fontScale)) }
+  function liveSpace(value) { return Math.max(1, Math.round(Style.spaceReal(value) * density)) }
+  function liveCorner(value) { return Math.max(0, Math.round(value * cornerScale)) }
   function focusDefault() { forceActiveFocus() }
   function showPage(value) {
-    page = value === "appearance" ? "appearance" : "contacts"
+    page = value === "contacts" ? "contacts" : "appearance"
     settingsFlick.contentY = 0
   }
   function copyVCard(handle) {
@@ -98,17 +120,21 @@ FocusScope {
       Layout.fillWidth: true
       spacing: root.space(8)
       ActionButton {
-        label: "Contacts"
-        selected: root.page === "contacts"
-        onClicked: root.showPage("contacts")
-      }
-      ActionButton {
         label: "Appearance"
         selected: root.page === "appearance"
         onClicked: root.showPage("appearance")
       }
-      Item { Layout.fillWidth: true }
+      ActionButton {
+        label: "Contacts"
+        selected: root.page === "contacts"
+        onClicked: root.showPage("contacts")
+      }
       Text {
+        // fillWidth + elide: the popout is narrow, and an unbounded implicit
+        // width here silently stretches the whole settings column past it.
+        Layout.fillWidth: true
+        horizontalAlignment: Text.AlignRight
+        elide: Text.ElideRight
         text: root.page === "contacts"
           ? "Manage Mac Contacts or set an optional display preference"
           : "Changes preview and apply live"
@@ -146,7 +172,11 @@ FocusScope {
 
       ColumnLayout {
         id: settingsContent
-        width: Math.min(parent.width, root.space(root.page === "appearance" ? 1320 : 1120))
+        // Appearance uses the full window so the preview can be as large as
+        // possible; contacts keeps a readable measure.
+        width: root.page === "appearance"
+          ? parent.width
+          : Math.min(parent.width, root.space(1120))
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: root.space(16)
 
@@ -165,9 +195,9 @@ FocusScope {
           urgent: root.urgent
           accent: root.accent
           fontFamily: root.fontFamily
-          fontScale: root.fontScale
-          density: root.density
-          cornerScale: root.cornerScale
+          fontScale: root.chromeFontScale
+          density: root.chromeDensity
+          cornerScale: root.chromeCornerScale
           onFocusAreaRequested: function(localY) {
             Qt.callLater(function() {
               var mapped = identitySettings.mapToItem(settingsContent, 0, localY).y
@@ -198,21 +228,30 @@ FocusScope {
         GridLayout {
           id: appearanceWorkspace
           Layout.fillWidth: true
-          columns: width >= root.space(940) ? 2 : 1
+          // Preview-beside-controls whenever both columns can breathe. The
+          // preview is a uniform-scale miniature, so it stays useful narrow;
+          // keep this threshold well below the wide-popout width and the app
+          // window's plausible sizes — space() shrinks with density while the
+          // panel's padding does not, and a threshold close to the supplied
+          // width flipped the popout back to stacked at low density.
+          columns: width >= root.space(700) ? 2 : 1
           columnSpacing: root.space(24)
           rowSpacing: root.space(22)
 
           AppearancePreview {
             Layout.fillWidth: true
-            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(540) : 0
-            Layout.preferredWidth: root.space(680)
+            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(360) : 0
             Layout.alignment: Qt.AlignTop
           }
 
           ColumnLayout {
-            Layout.fillWidth: true
-            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(360) : 0
-            Layout.preferredWidth: root.space(440)
+            // The controls pin to the right at a fixed measure; the preview
+            // takes everything else.
+            Layout.fillWidth: appearanceWorkspace.columns === 1
+            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(300) : 0
+            Layout.preferredWidth: root.space(400)
+            Layout.maximumWidth: appearanceWorkspace.columns === 2
+              ? root.space(400) : Number.POSITIVE_INFINITY
             Layout.alignment: Qt.AlignTop
             spacing: root.space(14)
 
@@ -379,20 +418,36 @@ FocusScope {
     }
   }
 
+  // A uniformly scaled miniature of the real app window. Everything inside
+  // previewWindow is laid out at REAL app dimensions — the raw-px sidebar,
+  // spaceReal avatars, BlipWindow's edge inset — and shrunk by one scale
+  // transform, so the preview is to scale instead of per-part approximations.
   component AppearancePreview: Rectangle {
     id: appearancePreview
 
     readonly property real opacityValue: root.preferences ? root.preferences.backgroundOpacity : 0.70
     readonly property int configuredSidebar: root.preferences ? root.preferences.sidebarWidth : 320
     readonly property int configuredAvatar: root.preferences ? root.preferences.avatarSize : 30
-    readonly property int previewSidebar: Math.round(Math.max(
-      width * 0.28, Math.min(width * 0.57, root.space(configuredSidebar) * 0.56)
-    ))
-    readonly property int previewAvatar: Math.max(
-      root.space(20), Math.round(root.space(configuredAvatar) * 0.76)
-    )
+    // Mirrors BlipView: chronological rows use spaceReal(avatarSize); pinned
+    // tiles use 1.75× with a space(48) floor.
+    readonly property int rowAvatarSize: Math.max(1, Math.round(Style.spaceReal(configuredAvatar)))
+    readonly property int pinAvatarSize: Math.max(
+      Math.round(Style.spaceReal(configuredAvatar) * 1.75), root.liveSpace(48))
+    // The miniature previews the app window's DEFAULT geometry (1040×720,
+    // BlipWindow's implicit size) rather than the live window's. Mirroring
+    // the live window made 100% structurally impossible — the card sits
+    // inside that same window minus the controls column — while a fixed
+    // reference reaches an honest, pixel-true 100% whenever the workspace
+    // offers that much room, even in a modest window.
+    readonly property real appWidth: 1040
+    readonly property real appHeight: 720
+    // Fit by width AND height so the whole miniature stays visible without
+    // scrolling; never upscale past 100%.
+    readonly property real previewScale: Math.max(0.05, Math.min(1,
+      (width - root.space(24)) / appWidth,
+      Math.max(root.space(220), root.height - root.space(250)) / appHeight))
 
-    implicitHeight: root.space(520)
+    implicitHeight: previewColumn.implicitHeight + root.space(24)
     radius: root.corner(root.space(12))
     color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.06)
     border.width: 1
@@ -400,14 +455,15 @@ FocusScope {
     clip: true
 
     ColumnLayout {
+      id: previewColumn
       anchors.fill: parent
       anchors.margins: root.space(12)
       spacing: root.space(9)
 
       RowLayout {
         Layout.fillWidth: true
+        spacing: root.space(8)
         Text {
-          Layout.fillWidth: true
           text: "LIVE APP PREVIEW"
           textFormat: Text.PlainText
           color: root.accent
@@ -416,8 +472,14 @@ FocusScope {
           font.bold: true
         }
         Text {
+          // fillWidth + elide keeps the metrics from colliding with the
+          // title when the preview column is narrow.
+          Layout.fillWidth: true
+          horizontalAlignment: Text.AlignRight
+          elide: Text.ElideRight
           text: appearancePreview.configuredSidebar + " px sidebar · "
-            + appearancePreview.configuredAvatar + " px avatars"
+            + appearancePreview.configuredAvatar + " px avatars · "
+            + Math.round(appearancePreview.previewScale * 100) + "% scale"
           textFormat: Text.PlainText
           color: Qt.darker(root.foreground, 1.4)
           font.family: root.fontFamily
@@ -425,186 +487,222 @@ FocusScope {
         }
       }
 
-      Rectangle {
-        id: previewSurface
+      Item {
         Layout.fillWidth: true
-        Layout.fillHeight: true
-        radius: root.corner(root.space(9))
-        color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b,
-                       appearancePreview.opacityValue)
-        border.width: 1
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
-        clip: true
+        Layout.preferredHeight: Math.round(appearancePreview.appHeight * appearancePreview.previewScale)
 
-        RowLayout {
-          anchors.fill: parent
-          spacing: 0
+        Rectangle {
+          id: previewWindow
+          // centered when the height cap leaves spare width
+          x: Math.round((parent.width
+               - appearancePreview.appWidth * appearancePreview.previewScale) / 2)
+          width: appearancePreview.appWidth
+          height: appearancePreview.appHeight
+          transformOrigin: Item.TopLeft
+          scale: appearancePreview.previewScale
+          radius: root.liveCorner(root.liveSpace(12))
+          color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b,
+                         appearancePreview.opacityValue)
+          border.width: 1
+          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
+          clip: true
 
-          Item {
-            Layout.preferredWidth: appearancePreview.previewSidebar
-            Layout.fillHeight: true
+          RowLayout {
+            // BlipWindow's edge inset, then the sidebar's own gutters — the
+            // same geometry the real split view builds.
+            anchors.fill: parent
+            anchors.margins: root.liveSpace(12)
+            spacing: 0
 
-            ColumnLayout {
-              anchors.fill: parent
-              anchors.margins: root.space(10)
-              spacing: root.space(9)
+            Item {
+              Layout.preferredWidth: appearancePreview.configuredSidebar
+              Layout.fillHeight: true
 
-              RowLayout {
-                Layout.fillWidth: true
+              ColumnLayout {
+                anchors.fill: parent
+                anchors.leftMargin: root.liveSpace(6)
+                anchors.rightMargin: root.liveSpace(18)
+                anchors.topMargin: root.liveSpace(10)
+                anchors.bottomMargin: root.liveSpace(10)
+                spacing: root.liveSpace(8)
+
+                RowLayout {
+                  Layout.fillWidth: true
+                  spacing: root.liveSpace(8)
+                  Text {
+                    text: "Blip"
+                    textFormat: Text.PlainText
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.title
+                    font.bold: true
+                  }
+                  Text {
+                    Layout.fillWidth: true
+                    text: "ALL CAUGHT UP"
+                    textFormat: Text.PlainText
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: root.fontFamily
+                    font.pixelSize: root.liveFontSize(Style.font.caption)
+                    font.bold: true
+                    font.letterSpacing: 1.2
+                    elide: Text.ElideRight
+                  }
+                  Text {
+                    text: "⚙"
+                    textFormat: Text.PlainText
+                    color: root.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: root.liveFontSize(Style.font.icon)
+                  }
+                }
+
+                Rectangle {
+                  Layout.fillWidth: true
+                  implicitHeight: 1
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
+                }
+
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.topMargin: root.liveSpace(6)
+                  implicitHeight: root.liveSpace(34)
+                  radius: root.liveCorner(root.liveSpace(6))
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                  border.width: 1
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.liveSpace(9)
+                    text: "🔍 search all messages"
+                    textFormat: Text.PlainText
+                    color: Qt.darker(root.foreground, 1.4)
+                    font.family: root.fontFamily
+                    font.pixelSize: root.liveFontSize(Style.font.bodySmall)
+                  }
+                }
+
+                GridLayout {
+                  id: previewPinGrid
+                  Layout.fillWidth: true
+                  Layout.topMargin: root.liveSpace(6)
+                  columns: appearancePreview.configuredSidebar < 400 ? 3 : 4
+                  columnSpacing: root.liveSpace(6)
+                  rowSpacing: root.liveSpace(8)
+
+                  Repeater {
+                    model: [
+                      { initials: "AR", label: "Alex", chosen: true },
+                      { initials: "D", label: "Design", chosen: false },
+                      { initials: "M", label: "Morgan", chosen: false },
+                      { initials: "S", label: "Sam", chosen: false }
+                    ].slice(0, previewPinGrid.columns)
+                    delegate: PreviewAvatar {
+                      required property var modelData
+                      Layout.fillWidth: true
+                      diameter: appearancePreview.pinAvatarSize
+                      initials: modelData.initials
+                      label: modelData.label
+                      selected: modelData.chosen
+                    }
+                  }
+                }
+
+                PreviewThreadRow {
+                  Layout.fillWidth: true
+                  diameter: appearancePreview.rowAvatarSize
+                  initials: "JD"
+                  name: "Jordan Diaz"
+                  detail: "See you at seven"
+                  time: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
+                }
+                PreviewThreadRow {
+                  Layout.fillWidth: true
+                  diameter: appearancePreview.rowAvatarSize
+                  initials: "T"
+                  name: "Trail crew"
+                  detail: "You: Sounds good"
+                  time: "Yesterday"
+                }
+                Item { Layout.fillHeight: true }
+              }
+            }
+
+            Rectangle {
+              Layout.preferredWidth: 1
+              Layout.fillHeight: true
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
+            }
+
+            Item {
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+
+              ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: root.liveSpace(12)
+                spacing: root.liveSpace(10)
                 Text {
                   Layout.fillWidth: true
-                  text: "Blip"
+                  text: "Jordan Diaz"
                   textFormat: Text.PlainText
                   color: root.foreground
                   font.family: root.fontFamily
-                  font.pixelSize: root.fontSize(Style.font.body)
+                  font.pixelSize: Style.font.title
                   font.bold: true
                 }
-                Text {
-                  text: "⚙"
-                  textFormat: Text.PlainText
-                  color: root.accent
-                  font.family: root.fontFamily
-                  font.pixelSize: root.fontSize(Style.font.icon)
-                }
-              }
-
-              Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: root.space(34)
-                radius: root.corner(root.space(6))
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
-                border.width: 1
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
-                Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.left: parent.left
-                  anchors.leftMargin: root.space(9)
-                  text: "⌕  Search"
-                  textFormat: Text.PlainText
-                  color: Qt.darker(root.foreground, 1.4)
-                  font.family: root.fontFamily
-                  font.pixelSize: root.fontSize(Style.font.caption)
-                }
-              }
-
-              RowLayout {
-                Layout.fillWidth: true
-                spacing: root.space(5)
-                PreviewAvatar {
+                Rectangle {
                   Layout.fillWidth: true
-                  diameter: appearancePreview.previewAvatar
-                  initials: "AR"
-                  label: "Alex"
-                  selected: true
+                  implicitHeight: 1
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
                 }
-                PreviewAvatar {
+                Item { Layout.fillHeight: true }
+                RowLayout {
                   Layout.fillWidth: true
-                  diameter: appearancePreview.previewAvatar
-                  initials: "D"
-                  label: "Design"
+                  PreviewBubble {
+                    mine: false
+                    label: "Their bubble"
+                    fillColor: root.incomingFill
+                    textColor: root.incomingText
+                  }
+                  Item { Layout.fillWidth: true }
                 }
-                PreviewAvatar {
+                RowLayout {
                   Layout.fillWidth: true
-                  diameter: appearancePreview.previewAvatar
-                  initials: "M"
-                  label: "Morgan"
+                  Item { Layout.fillWidth: true }
+                  PreviewBubble {
+                    mine: true
+                    label: "Your bubble"
+                    fillColor: root.outgoingFill
+                    textColor: root.outgoingText
+                  }
                 }
-              }
-
-              PreviewThreadRow {
-                Layout.fillWidth: true
-                diameter: appearancePreview.previewAvatar * 0.78
-                initials: "JD"
-                name: "Jordan Diaz"
-                detail: "See you at seven"
-                time: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
-              }
-              PreviewThreadRow {
-                Layout.fillWidth: true
-                diameter: appearancePreview.previewAvatar * 0.78
-                initials: "T"
-                name: "Trail crew"
-                detail: "You: Sounds good"
-                time: "Yesterday"
-              }
-              Item { Layout.fillHeight: true }
-            }
-          }
-
-          Rectangle {
-            Layout.preferredWidth: 1
-            Layout.fillHeight: true
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
-          }
-
-          Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            ColumnLayout {
-              anchors.fill: parent
-              anchors.margins: root.space(12)
-              spacing: root.space(10)
-              Text {
-                Layout.fillWidth: true
-                text: "Jordan Diaz"
-                textFormat: Text.PlainText
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: root.fontSize(Style.font.body)
-                font.bold: true
-              }
-              Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: 1
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
-              }
-              Item { Layout.fillHeight: true }
-              RowLayout {
-                Layout.fillWidth: true
-                PreviewBubble {
-                  mine: false
-                  label: "Their bubble"
-                  fillColor: root.incomingFill
-                  textColor: root.incomingText
-                }
-                Item { Layout.fillWidth: true }
-              }
-              RowLayout {
-                Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                PreviewBubble {
-                  mine: true
-                  label: "Your bubble"
-                  fillColor: root.outgoingFill
-                  textColor: root.outgoingText
-                }
-              }
-              Text {
-                Layout.alignment: Qt.AlignHCenter
-                text: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
-                textFormat: Text.PlainText
-                color: Qt.darker(root.foreground, 1.45)
-                font.family: root.fontFamily
-                font.pixelSize: root.fontSize(Style.font.caption)
-              }
-              Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: root.space(34)
-                radius: root.corner(root.space(6))
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
-                border.width: 1
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
                 Text {
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.left: parent.left
-                  anchors.leftMargin: root.space(9)
-                  text: "iMessage"
+                  Layout.alignment: Qt.AlignHCenter
+                  text: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
                   textFormat: Text.PlainText
-                  color: Qt.darker(root.foreground, 1.5)
+                  color: Qt.darker(root.foreground, 1.45)
                   font.family: root.fontFamily
-                  font.pixelSize: root.fontSize(Style.font.caption)
+                  font.pixelSize: root.liveFontSize(Style.font.caption)
+                }
+                Rectangle {
+                  Layout.fillWidth: true
+                  implicitHeight: root.liveSpace(34)
+                  radius: root.liveCorner(root.liveSpace(6))
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                  border.width: 1
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: root.liveSpace(9)
+                    text: "iMessage"
+                    textFormat: Text.PlainText
+                    color: Qt.darker(root.foreground, 1.5)
+                    font.family: root.fontFamily
+                    font.pixelSize: root.liveFontSize(Style.font.caption)
+                  }
                 }
               }
             }
@@ -614,52 +712,80 @@ FocusScope {
     }
   }
 
-  component PreviewAvatar: ColumnLayout {
+  // Mirrors BlipView's PinnedConversation geometry: avatar + name centered
+  // in the tile, selection shown as the rounded background the app uses.
+  component PreviewAvatar: Item {
     id: previewAvatarItem
-    property real diameter: root.space(30)
+    property real diameter: root.liveSpace(30)
     property string initials: "A"
     property string label: "Alex"
     property bool selected: false
-    spacing: root.space(4)
+    implicitHeight: previewAvatarContent.implicitHeight + root.liveSpace(12)
 
     Rectangle {
-      Layout.alignment: Qt.AlignHCenter
-      implicitWidth: previewAvatarItem.diameter
-      implicitHeight: previewAvatarItem.diameter
-      radius: width / 2
+      anchors.fill: parent
+      radius: root.liveCorner(root.liveSpace(12))
       color: previewAvatarItem.selected
-        ? root.accent
-        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
-      Text {
-        anchors.centerIn: parent
-        text: previewAvatarItem.initials
-        textFormat: Text.PlainText
-        color: previewAvatarItem.selected ? root.outgoingText : root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.caption)
-        font.bold: true
-      }
+        ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+        : "transparent"
     }
-    Text {
-      Layout.fillWidth: true
-      horizontalAlignment: Text.AlignHCenter
-      text: previewAvatarItem.label
-      textFormat: Text.PlainText
-      elide: Text.ElideRight
-      color: root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: root.fontSize(Style.font.caption)
+
+    Column {
+      id: previewAvatarContent
+      anchors.centerIn: parent
+      width: parent.width - root.liveSpace(8)
+      spacing: root.liveSpace(4)
+
+      Item {
+        width: parent.width
+        height: previewAvatarItem.diameter
+
+        Rectangle {
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: previewAvatarItem.diameter
+          height: width
+          radius: width / 2
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+          Text {
+            anchors.centerIn: parent
+            text: previewAvatarItem.initials
+            textFormat: Text.PlainText
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: root.liveFontSize(Style.font.bodySmall)
+            font.bold: true
+          }
+        }
+      }
+      Text {
+        width: parent.width
+        horizontalAlignment: Text.AlignHCenter
+        text: previewAvatarItem.label
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        maximumLineCount: 1
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.liveFontSize(Style.font.caption)
+      }
     }
   }
 
   component PreviewThreadRow: RowLayout {
     id: previewThread
-    property real diameter: root.space(24)
+    property real diameter: root.liveSpace(24)
     property string initials: "A"
     property string name: "Alex"
     property string detail: "Message preview"
     property string time: "7:04 PM"
-    spacing: root.space(7)
+    spacing: root.liveSpace(8)
+
+    // the unread-dot gutter the real rows reserve
+    Rectangle {
+      width: root.liveSpace(9); height: width; radius: width / 2
+      color: root.outgoingFill
+      opacity: 0
+    }
 
     Rectangle {
       implicitWidth: previewThread.diameter
@@ -672,14 +798,15 @@ FocusScope {
         textFormat: Text.PlainText
         color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.caption)
+        font.pixelSize: root.liveFontSize(Style.font.caption)
       }
     }
     ColumnLayout {
       Layout.fillWidth: true
-      spacing: 0
+      spacing: root.liveSpace(1)
       RowLayout {
         Layout.fillWidth: true
+        spacing: root.liveSpace(6)
         Text {
           Layout.fillWidth: true
           text: previewThread.name
@@ -687,15 +814,14 @@ FocusScope {
           elide: Text.ElideRight
           color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: root.fontSize(Style.font.caption)
-          font.bold: true
+          font.pixelSize: root.liveFontSize(Style.font.bodySmall)
         }
         Text {
           text: previewThread.time
           textFormat: Text.PlainText
           color: Qt.darker(root.foreground, 1.45)
           font.family: root.fontFamily
-          font.pixelSize: root.fontSize(Style.font.caption)
+          font.pixelSize: root.liveFontSize(Style.font.caption)
         }
       }
       Text {
@@ -705,7 +831,7 @@ FocusScope {
         elide: Text.ElideRight
         color: Qt.darker(root.foreground, 1.4)
         font.family: root.fontFamily
-        font.pixelSize: root.fontSize(Style.font.caption)
+        font.pixelSize: root.liveFontSize(Style.font.caption)
       }
     }
   }
@@ -717,8 +843,8 @@ FocusScope {
     property color fillColor: root.incomingFill
     property color textColor: root.incomingText
 
-    Layout.preferredWidth: Math.ceil(previewLabel.implicitWidth) + root.space(22)
-    Layout.preferredHeight: Math.ceil(previewLabel.implicitHeight) + root.space(14)
+    Layout.preferredWidth: Math.ceil(previewLabel.implicitWidth) + root.liveSpace(22)
+    Layout.preferredHeight: Math.ceil(previewLabel.implicitHeight) + root.liveSpace(14)
 
     Shape {
       anchors.fill: parent
@@ -726,7 +852,7 @@ FocusScope {
       ShapePath {
         id: previewPath
         readonly property real r: Math.min(
-          root.corner(root.space(16)), previewBubble.width / 2, previewBubble.height / 2
+          root.liveCorner(root.liveSpace(16)), previewBubble.width / 2, previewBubble.height / 2
         )
         strokeColor: "transparent"
         fillColor: previewBubble.fillColor
@@ -767,7 +893,7 @@ FocusScope {
       textFormat: Text.PlainText
       color: previewBubble.textColor
       font.family: root.fontFamily
-      font.pixelSize: root.fontSize(Style.font.bodySmall)
+      font.pixelSize: root.liveFontSize(Style.font.bodySmall)
     }
   }
 
