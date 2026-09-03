@@ -230,6 +230,8 @@ FocusScope {
   property bool firstLoad: true         // first load of the open thread pins to bottom
   property bool settingsMode: false
   property string pendingThreadChat: "" // latest chat requested while it runs
+  property var pendingThreadAliases: [] // historical ids coalesced into that chat
+  property var threadRunningAliases: []
   property string sendChat: ""          // immutable context for the current send
   property string sendText: ""
   property string reloadChat: ""
@@ -284,7 +286,7 @@ FocusScope {
           if (!flick.stick) { pushPending = true }  // reading history — defer
           else {
             pinToBottom = true
-            requestThreadLoad(String(t.chat))
+            requestThreadLoad(String(t.chat), t.aliases || [])
           }
         }
       }
@@ -293,6 +295,15 @@ FocusScope {
   }
   // Same rule as collector.isGroupChat(): anything that is not a phone/email.
   function isGroupId(c) { c = String(c || ""); return c !== "" && !/^\+?[0-9]{5,}$/.test(c) && c.indexOf("@") < 0 }
+  function threadContainsChat(thread, chat) {
+    if (!thread) return false
+    var wanted = String(chat || "")
+    if (String(thread.chat || "") === wanted) return true
+    var aliases = Array.isArray(thread.aliases) ? thread.aliases : []
+    for (var i = 0; i < aliases.length; i++)
+      if (String(aliases[i]) === wanted) return true
+    return false
+  }
   readonly property bool activeIsGroup: inThread && isGroupId(active.chat)
 
   /**
@@ -318,6 +329,7 @@ FocusScope {
     cursor = -1
     loading = false
     pendingThreadChat = ""
+    pendingThreadAliases = []
     composeField.text = ""
     searching = false
     searchResults = []
@@ -339,16 +351,18 @@ FocusScope {
     note = ""
     loading = false
     pendingThreadChat = ""
+    pendingThreadAliases = []
     composeField.text = ""
     clearDraft()   // a queued file must never survive into another thread
     pinToBottom = false
     Qt.callLater(function() { threadFlick.contentY = 0; root.navigationFocusRequested() })
   }
 
-  function openSettings() {
+  function openSettings(page) {
     exitSearch()
     exitNew()
     settingsMode = true
+    settingsView.showPage(String(page || "contacts") === "appearance" ? "appearance" : "contacts")
     Qt.callLater(settingsView.focusDefault)
   }
 
@@ -369,20 +383,23 @@ FocusScope {
     loading = true
     composeField.text = ""
     clearDraft()   // a queued file must never survive into another thread
-    requestThreadLoad(String(t.chat))
+    requestThreadLoad(String(t.chat), t.aliases || [])
     Qt.callLater(function() { composeField.forceActiveFocus() })
   }
 
-  function requestThreadLoad(chat) {
+  function requestThreadLoad(chat, aliases) {
     pendingThreadChat = String(chat || "")
+    pendingThreadAliases = Array.isArray(aliases) ? aliases.slice(0, 16) : []
     if (!threadProc.running) startNextThreadLoad()
   }
 
   function startNextThreadLoad() {
     if (threadProc.running || pendingThreadChat === "") return
     threadRunningChat = pendingThreadChat
+    threadRunningAliases = pendingThreadAliases
     pendingThreadChat = ""
-    threadProc.command = ["bun", root.threadScript, threadRunningChat, "80"]
+    pendingThreadAliases = []
+    threadProc.command = ["bun", root.threadScript, threadRunningChat, "80"].concat(threadRunningAliases)
     threadProc.running = true
   }
 
@@ -697,7 +714,7 @@ FocusScope {
     if (!flick.stick) { pushPending = true; return }
     if (threadProc.running && pendingThreadChat !== "") return
     pinToBottom = true
-    requestThreadLoad(String(active.chat))
+    requestThreadLoad(String(active.chat), active.aliases || [])
   }
 
   /** IPC hook (`newchat <query>`): drive the composer path minus the keyboard. */
@@ -724,7 +741,7 @@ FocusScope {
   function openSearchHit(hit) {
     searching = false
     for (var i = 0; i < threads.length; i++) {
-      if (String(threads[i].chat) === String(hit.chat)) { openThread(threads[i]); return }
+      if (threadContainsChat(threads[i], hit.chat)) { openThread(threads[i]); return }
     }
     openThread({ chat: hit.chat, guid: "", name: hit.name, handle: hit.handle,
                  service: hit.service, last_ts: hit.ts, last_text: "",
@@ -818,8 +835,23 @@ FocusScope {
   function fmtTime(ts) {
     var s = String(ts || "")
     if (s.length < 16) return s
+    var hour = Number(s.substring(11, 13))
+    var minute = s.substring(14, 16)
+    var use12 = !root.preferences || root.preferences.use12HourConversationTimes
+    var clock = ""
+    if (use12) {
+      var suffix = hour >= 12 ? "PM" : "AM"
+      var displayHour = hour % 12
+      if (displayHour === 0) displayHour = 12
+      clock = displayHour + ":" + minute + " " + suffix
+    } else {
+      clock = s.substring(11, 16)
+    }
     var today = Qt.formatDateTime(new Date(), "yyyy-MM-dd")
-    return s.substring(0, 10) === today ? s.substring(11, 16) : s.substring(5, 16)
+    if (s.substring(0, 10) === today) return clock
+    var month = Number(s.substring(5, 7))
+    var day = Number(s.substring(8, 10))
+    return month + "/" + day + " " + clock
   }
 
   // ------------------------------------------------------------ processes
@@ -841,7 +873,8 @@ FocusScope {
               // Nothing changed — do NOT rebuild the Repeater (a rebuild
               // resets scroll and re-decodes every image). Push pings mostly
               // produce identical content; this makes them free.
-              if (root.hostWidget && root.readActive) root.hostWidget.markThreadRead(root.threadRunningChat)
+              if (root.hostWidget && root.readActive)
+                root.hostWidget.markThreadRead(root.threadRunningChat, root.threadRunningAliases)
               return
             }
             root.bubblesJson = j
@@ -852,7 +885,8 @@ FocusScope {
             root.firstLoad = false
             Qt.callLater(root.autoFetchImages)
             // A dot means "looked at", so clear it only after content loaded.
-            if (root.hostWidget && root.readActive) root.hostWidget.markThreadRead(root.threadRunningChat)
+            if (root.hostWidget && root.readActive)
+              root.hostWidget.markThreadRead(root.threadRunningChat, root.threadRunningAliases)
           } else {
             root.bubbles = []
             root.note = String(d.error || "could not load this thread")
@@ -867,6 +901,7 @@ FocusScope {
       var completedChat = root.threadRunningChat
       var belongsHere = root.inThread && String(root.active.chat) === completedChat
       root.threadRunningChat = ""
+      root.threadRunningAliases = []
       if (belongsHere && root.pendingThreadChat === "") root.loading = false
       if (belongsHere && code !== 0) root.note = "thread loader failed (exit " + code + ")"
       if (root.pendingThreadChat !== "") Qt.callLater(root.startNextThreadLoad)
@@ -1058,7 +1093,7 @@ FocusScope {
     interval: 1500
     onTriggered: if (root.inThread && String(root.active.chat) === root.reloadChat) {
       root.loading = true
-      root.requestThreadLoad(root.reloadChat)
+      root.requestThreadLoad(root.reloadChat, root.active ? root.active.aliases || [] : [])
     }
   }
 
@@ -1118,22 +1153,38 @@ FocusScope {
       Layout.preferredWidth: root.splitView ? root.sidebarWidth : -1
       ColumnLayout {
         anchors.fill: parent
-        // Gutters for the app: the popout's card supplies its own padding,
-        // the window's panes had text flush against the borders (Fred).
-        anchors.leftMargin: root.splitView ? root.space(18) : 0
+        // BlipWindow already supplies the outer edge inset. Keep only a small
+        // inner gutter here so the sidebar does not pay for the same padding
+        // twice; retain the larger right gutter beside the pane divider.
+        anchors.leftMargin: root.splitView ? root.space(6) : 0
         anchors.rightMargin: root.splitView ? root.space(18) : 0
         anchors.topMargin: root.splitView ? root.space(10) : 0
         anchors.bottomMargin: root.splitView ? root.space(10) : 0
         spacing: root.space(root.splitView ? 14 : 8)
-        PanelHero {
+        RowLayout {
           Layout.fillWidth: true
-          title: "Blip"
-          meta: (!root.online
-                ? "Mac unreachable — bridge offline"
-                : (root.unread > 0 ? root.unread + " unread" : "all caught up"))
-          detail: ""   // Fred: not needed — and it squeezed the title to "B…"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
+          spacing: root.space(8)
+          PanelHero {
+            Layout.fillWidth: true
+            title: "Blip"
+            meta: (!root.online
+                  ? "Mac unreachable — bridge offline"
+                  : (root.unread > 0 ? root.unread + " unread" : "all caught up"))
+            detail: ""   // Fred: not needed — and it squeezed the title to "B…"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+          PanelActionButton {
+            focusable: true
+            iconText: "⚙"
+            tooltipText: "Settings"
+            bordered: true
+            foreground: root.foreground
+            hoverColor: root.accent
+            fontFamily: root.fontFamily
+            fontSize: root.fontSize(Style.font.icon)
+            onClicked: root.openSettings()
+          }
         }
 
         PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
@@ -1211,9 +1262,11 @@ FocusScope {
             RowLayout {
               Layout.fillWidth: true
               visible: root.online && root.listShowing
+                       && (root.newMode || root.searchShowing || !root.splitView || root.unread > 0)
               PanelSectionHeader {
                 Layout.fillWidth: true
-                text: root.newMode ? "NEW MESSAGE" : root.searchShowing ? "SEARCH" : "MESSAGES"
+                visible: root.newMode || root.searchShowing
+                text: root.newMode ? "NEW MESSAGE" : "SEARCH"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 fontSize: root.fontSize(Style.font.caption)
@@ -1244,18 +1297,6 @@ FocusScope {
                 fontFamily: root.fontFamily
                 fontSize: root.fontSize(Style.font.icon)
                 onClicked: root.openApp()
-              }
-              PanelActionButton {
-                visible: !root.newMode && !root.searchShowing
-                focusable: true
-                iconText: "⚙"
-                tooltipText: "Settings"
-                bordered: true
-                foreground: root.foreground
-                hoverColor: root.accent
-                fontFamily: root.fontFamily
-                fontSize: root.fontSize(Style.font.icon)
-                onClicked: root.openSettings()
               }
               // Local only: moves readMark/readMarks in state.json so the
               // badge and dots clear. Nothing is written back to the Mac —
@@ -1539,14 +1580,6 @@ FocusScope {
               visible: root.online && root.listShowing && !root.searchShowing
                        && !root.newMode && root.pinnedThreads.length > 0
               spacing: root.space(7)
-
-              PanelSectionHeader {
-                Layout.fillWidth: true
-                text: "PINNED"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: root.fontSize(Style.font.caption)
-              }
 
               GridLayout {
                 id: pinnedGrid
@@ -2169,9 +2202,10 @@ FocusScope {
                                     + ((modelData.tapbacks || []).length > 0 ? root.space(12) : 0)
                   visible: !modelData.retracted &&
                            (String(modelData.text || "") !== "" || (modelData.attachments || []).length === 0) &&
-                           // a message that is ONLY the URL shows just the card,
-                           // like Messages — for Apple's card and for ours
-                           !(modelData.link && String(modelData.text || "").trim() === String(modelData.link.url)) &&
+                           // URL-only messages show just the unfurled card. The
+                           // model handles Apple's canonicalized URL, while the
+                           // live check covers cards Blip fetched itself.
+                           modelData.linkOnly !== true &&
                            !(!modelData.link && !!linkRow.fetched
                              && String(modelData.text || "").trim() === linkRow.bareUrl)
                   spacing: 0
@@ -2496,6 +2530,7 @@ FocusScope {
     readonly property int pinAvatarSize: Math.max(
       Math.round(Style.spaceReal(root.avatarSize) * 1.75), root.space(48))
     readonly property string avatarHandle: String(thread.handle || thread.chat || "")
+    readonly property string displayName: String(thread.pin_name || thread.name || thread.chat || "")
 
     Rectangle {
       anchors.fill: parent
@@ -2557,7 +2592,7 @@ FocusScope {
             anchors.centerIn: parent
             visible: pinAvatarImage.status !== Image.Ready
             text: {
-              var name = String(pinTile.thread.name || "")
+              var name = pinTile.displayName
               if (/^[+0-9]/.test(name) || name === "") return "#"
               var parts = name.trim().split(/\s+/)
               return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase()
@@ -2597,7 +2632,7 @@ FocusScope {
 
       Text {
         width: parent.width
-        text: String(pinTile.thread.name || pinTile.thread.chat || "")
+        text: pinTile.displayName
         textFormat: Text.PlainText
         color: root.foreground
         horizontalAlignment: Text.AlignHCenter

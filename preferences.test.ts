@@ -65,6 +65,20 @@ describe("preference schema", () => {
     })).toThrow("boolean");
   });
 
+  test("defaults legacy files to AM/PM conversation times and validates the choice", () => {
+    const legacy = { ...DEFAULT_PREFERENCES } as Record<string, unknown>;
+    delete legacy.use12HourConversationTimes;
+    expect(normalizePreferences(legacy).use12HourConversationTimes).toBe(true);
+    expect(normalizePreferences({
+      ...DEFAULT_PREFERENCES,
+      use12HourConversationTimes: false,
+    }).use12HourConversationTimes).toBe(false);
+    expect(() => normalizePreferences({
+      ...DEFAULT_PREFERENCES,
+      use12HourConversationTimes: "sometimes",
+    })).toThrow("boolean");
+  });
+
   test("rejects every wrong top-level JSON type", () => {
     for (const value of [null, [], "x", 1, true])
       expect(() => normalizePreferences(value)).toThrow("JSON object");

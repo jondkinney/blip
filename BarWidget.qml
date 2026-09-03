@@ -171,12 +171,12 @@ BarWidget {
       'for i in 1 2 3 4 5 6 7 8; do a=$(hyprctl clients -j | jq -r \'.[] | select(.title | startswith("Blip")) | .address\' | head -1); [ -n "$a" ] && break; sleep 0.15; done; ' +
       '[ -n "$a" ] && hyprctl dispatch "hl.dsp.focus({ window = \\"address:$a\\" })" >/dev/null'])
   }
-  function showSettings() {
+  function showSettings(page) {
     showApp()
     Qt.callLater(function() {
       if (!windowLoader.item) return
       windowLoader.item.visible = true
-      windowLoader.item.openSettings()
+      windowLoader.item.openSettings(page)
     })
   }
   /** Either surface open → keep the deep (complete) thread list. */
@@ -213,9 +213,21 @@ BarWidget {
   property var refreshQueue: []        // stateful requests are never overwritten
   property bool collectorReserved: false // a queued run owns the next event-loop turn
 
-  function refresh(deep, markRead, readChat, seen) {
+  function normalizedReadAliases(readChat, values) {
+    var chat = String(readChat || "")
+    var source = Array.isArray(values) ? values : []
+    var out = []
+    for (var i = 0; i < source.length && out.length < 15; i++) {
+      var alias = String(source[i] || "")
+      if (alias !== "" && alias !== chat && out.indexOf(alias) < 0) out.push(alias)
+    }
+    return out
+  }
+
+  function refresh(deep, markRead, readChat, seen, readAliases) {
     var req = { deep: deep === true, markRead: markRead === true,
-                readChat: String(readChat || ""), seen: String(seen || "") }
+                readChat: String(readChat || ""), seen: String(seen || ""),
+                readAliases: normalizedReadAliases(readChat, readAliases) }
     if (collector.running || collectorReserved) { enqueueRefresh(req); return }
     runRefresh(req)
   }
@@ -227,9 +239,11 @@ BarWidget {
     // entry per ping). mark-all stays FIFO and is never overwritten.
     if (!req.markRead) {
       for (var i = 0; i < q.length; i++) {
-        if (!q[i].markRead && q[i].readChat === req.readChat) {
+        if (!q[i].markRead && q[i].readChat === req.readChat
+            && JSON.stringify(q[i].readAliases || []) === JSON.stringify(req.readAliases)) {
           q[i] = { deep: q[i].deep || req.deep, markRead: false, readChat: req.readChat,
-                   seen: req.seen > q[i].seen ? req.seen : q[i].seen }
+                   seen: req.seen > q[i].seen ? req.seen : q[i].seen,
+                   readAliases: req.readAliases }
           refreshQueue = q
           return
         }
@@ -244,6 +258,8 @@ BarWidget {
     if (req.markRead) args.push("--mark-read")
     if (req.readChat !== "") {
       args.push("--read", req.readChat)
+      for (var i = 0; i < req.readAliases.length; i++)
+        args.push("--read-alias", req.readAliases[i])
       if (req.seen !== "") args.push("--seen", req.seen)
     }
     collector.command = args
@@ -288,7 +304,7 @@ BarWidget {
     return out
   }
 
-  function markThreadRead(chat) {
+  function markThreadRead(chat, aliases) {
     var c = String(chat)
     var lastTs = ""
     var list = threads.map(function(t) {
@@ -299,7 +315,7 @@ BarWidget {
     noteLocalRead(c, lastTs)
     threads = list
     unread = list.reduce(function(n, t) { return n + (Number(t.unread) || 0) }, 0)
-    refresh(true, false, c, lastTs)
+    refresh(true, false, c, lastTs, aliases)
   }
 
   function markAllRead() {
@@ -337,6 +353,10 @@ BarWidget {
   function activeSeenTs() {
     var s = readingSurface()
     return s ? String(s.activeLastTs || "") : ""
+  }
+  function activeReadAliases() {
+    var s = readingSurface()
+    return s && s.active ? s.active.aliases || [] : []
   }
 
   Process {
@@ -429,7 +449,7 @@ BarWidget {
     // While the panel is open keep the wide window, or the list would shrink
     // from 40 threads to 14 on the next tick.
     onTriggered: root.refresh(root.anySurfaceOpen(), false,
-                              root.activeReadChat(), root.activeSeenTs())
+                              root.activeReadChat(), root.activeSeenTs(), root.activeReadAliases())
   }
 
   // ------------------------------------------------- real-time push
@@ -481,7 +501,8 @@ BarWidget {
       // Carrying the open thread's chat means a message landing in the
       // conversation the user is READING is counted read in this same run —
       // no badge flash, no second round-trip.
-      root.refresh(root.anySurfaceOpen(), false, root.activeReadChat(), root.activeSeenTs())
+      root.refresh(root.anySurfaceOpen(), false, root.activeReadChat(), root.activeSeenTs(),
+                   root.activeReadAliases())
       // Reload the OPEN conversation in parallel — waiting for the collector
       // and then reloading serially added a visible second of latency.
       // Both surfaces: each gates itself on its own surfaceOpen.
@@ -611,6 +632,7 @@ BarWidget {
     function window(): string { root.toggleWindow(); return root.windowVisible ? "window shown" : "window hidden" }
     function app(): string { root.showApp(); return "app shown + focused" }
     function settings(): string { root.showSettings(); return "settings shown" }
+    function appearance(): string { root.showSettings("appearance"); return "appearance settings shown" }
     function windowgoto(chat: string): string {
       if (!root.automationOn) return root.automationOff
       root.ensureWindow()

@@ -44,6 +44,7 @@ export interface BlipPreferences {
   avatarSize: number;
   cornerScale: number;
   hideShortCodeConversations: boolean;
+  use12HourConversationTimes: boolean;
 }
 
 export const DEFAULT_PREFERENCES: Readonly<BlipPreferences> = Object.freeze({
@@ -57,6 +58,7 @@ export const DEFAULT_PREFERENCES: Readonly<BlipPreferences> = Object.freeze({
   avatarSize: 30,
   cornerScale: 1,
   hideShortCodeConversations: true,
+  use12HourConversationTimes: true,
 });
 
 const NUMBER_RULES = {
@@ -122,6 +124,11 @@ export function normalizePreferences(value: unknown): BlipPreferences {
     hideShortCodeConversations: normalizedBoolean(
       own(input, "hideShortCodeConversations"),
       "hideShortCodeConversations",
+      true,
+    ),
+    use12HourConversationTimes: normalizedBoolean(
+      own(input, "use12HourConversationTimes"),
+      "use12HourConversationTimes",
       true,
     ),
   };
