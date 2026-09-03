@@ -168,6 +168,12 @@ describe("QML safety invariants", () => {
   });
 
   test("appearance previews real bubble corners and offers portable list time formatting", () => {
+    expect(settings).toContain("component AppearancePreview: Rectangle");
+    expect(settings).toContain('text: "LIVE APP PREVIEW"');
+    expect(settings).toContain("configuredSidebar");
+    expect(settings).toContain("configuredAvatar");
+    expect(settings).toContain("appearancePreview.previewSidebar");
+    expect(settings).toContain("appearancePreview.previewAvatar");
     expect(settings).toContain("component PreviewBubble: Item");
     expect(settings).toContain("previewBubble.mine ? previewBubble.height");
     expect(settings).toContain('label: "12-hour (AM/PM)"');
@@ -269,7 +275,7 @@ describe("QML safety invariants", () => {
     expect(settings).toContain('property string page: "contacts"');
     expect(settings).toContain('visible: root.page === "contacts"');
     expect(settings).toContain('visible: root.page === "appearance"');
-    expect(settings).toContain("width: Math.min(parent.width, root.space(1120))");
+    expect(settings).toContain('root.page === "appearance" ? 1320 : 1120');
     expect(identitySettings).toContain('label: "← All conversations"');
     expect(identitySettings).toContain("visible: !root.reviewActive");
     expect(identitySettings).toContain("visible: root.macReviewExpanded");

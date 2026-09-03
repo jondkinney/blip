@@ -146,7 +146,7 @@ FocusScope {
 
       ColumnLayout {
         id: settingsContent
-        width: Math.min(parent.width, root.space(1120))
+        width: Math.min(parent.width, root.space(root.page === "appearance" ? 1320 : 1120))
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: root.space(16)
 
@@ -195,190 +195,517 @@ FocusScope {
           font.pixelSize: root.fontSize(Style.font.bodySmall)
         }
 
-        // A real preview makes color, type, density, and rounding adjustments
-        // legible before the settings page is closed.
-        ColumnLayout {
+        GridLayout {
+          id: appearanceWorkspace
           Layout.fillWidth: true
-          spacing: root.space(7)
-          RowLayout {
+          columns: width >= root.space(940) ? 2 : 1
+          columnSpacing: root.space(24)
+          rowSpacing: root.space(22)
+
+          AppearancePreview {
             Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
-            PreviewBubble {
-              mine: true
-              label: "Your bubble"
-              fillColor: root.outgoingFill
-              textColor: root.outgoingText
-            }
+            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(540) : 0
+            Layout.preferredWidth: root.space(680)
+            Layout.alignment: Qt.AlignTop
           }
-          RowLayout {
+
+          ColumnLayout {
             Layout.fillWidth: true
-            PreviewBubble {
-              mine: false
-              label: "Their bubble"
-              fillColor: root.incomingFill
-              textColor: root.incomingText
+            Layout.minimumWidth: appearanceWorkspace.columns === 2 ? root.space(360) : 0
+            Layout.preferredWidth: root.space(440)
+            Layout.alignment: Qt.AlignTop
+            spacing: root.space(14)
+
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "COLORS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: root.fontSize(Style.font.caption)
             }
-            Item { Layout.fillWidth: true }
-          }
-        }
 
-        PanelSectionHeader {
-          Layout.fillWidth: true
-          text: "COLORS"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: root.fontSize(Style.font.caption)
-        }
-
-        ColorSetting {
-          id: outgoingSetting
-          Layout.fillWidth: true
-          title: "Outgoing bubbles"
-          preferenceKey: "outgoingBubbleColor"
-          currentValue: root.preferences ? root.preferences.outgoingBubbleColor : "theme"
-          resolvedColor: root.outgoingFill
-        }
-
-        ColorSetting {
-          id: incomingSetting
-          Layout.fillWidth: true
-          title: "Incoming bubbles"
-          preferenceKey: "incomingBubbleColor"
-          currentValue: root.preferences ? root.preferences.incomingBubbleColor : "theme"
-          resolvedColor: root.incomingFill
-        }
-
-        PanelSectionHeader {
-          Layout.fillWidth: true
-          text: "LAYOUT"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: root.fontSize(Style.font.caption)
-        }
-
-        ColumnLayout {
-          Layout.fillWidth: true
-          spacing: root.space(5)
-          Text {
-            text: "Conversation list time"
-            textFormat: Text.PlainText
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: root.fontSize(Style.font.bodySmall)
-            font.bold: true
-          }
-          RowLayout {
-            spacing: root.space(7)
-            ActionButton {
-              label: "12-hour (AM/PM)"
-              selected: !root.preferences || root.preferences.use12HourConversationTimes
-              onClicked: if (root.preferences)
-                root.preferences.setBoolean("use12HourConversationTimes", true)
+            ColorSetting {
+              id: outgoingSetting
+              Layout.fillWidth: true
+              title: "Outgoing bubbles"
+              preferenceKey: "outgoingBubbleColor"
+              currentValue: root.preferences ? root.preferences.outgoingBubbleColor : "theme"
+              resolvedColor: root.outgoingFill
             }
-            ActionButton {
-              label: "24-hour"
-              selected: root.preferences && !root.preferences.use12HourConversationTimes
-              onClicked: if (root.preferences)
-                root.preferences.setBoolean("use12HourConversationTimes", false)
+
+            ColorSetting {
+              id: incomingSetting
+              Layout.fillWidth: true
+              title: "Incoming bubbles"
+              preferenceKey: "incomingBubbleColor"
+              currentValue: root.preferences ? root.preferences.incomingBubbleColor : "theme"
+              resolvedColor: root.incomingFill
             }
-          }
-        }
 
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Window opacity"
-          preferenceKey: "backgroundOpacity"
-          currentValue: root.preferences ? root.preferences.backgroundOpacity : 0.70
-          from: 0.20; to: 1.0; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
-        }
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Font scale"
-          preferenceKey: "fontScale"
-          currentValue: root.preferences ? root.preferences.fontScale : 1.0
-          from: 0.75; to: 1.50; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
-        }
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Density"
-          preferenceKey: "density"
-          currentValue: root.preferences ? root.preferences.density : 1.0
-          from: 0.70; to: 1.40; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
-        }
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Sidebar width"
-          preferenceKey: "sidebarWidth"
-          currentValue: root.preferences ? root.preferences.sidebarWidth : 320
-          from: 240; to: 520; stepSize: 10; decimals: 0; multiplier: 1; suffix: " px"
-        }
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Avatar size"
-          preferenceKey: "avatarSize"
-          currentValue: root.preferences ? root.preferences.avatarSize : 30
-          from: 24; to: 64; stepSize: 2; decimals: 0; multiplier: 1; suffix: " px"
-        }
-        PreferenceSlider {
-          Layout.fillWidth: true
-          title: "Corner roundness"
-          preferenceKey: "cornerScale"
-          currentValue: root.preferences ? root.preferences.cornerScale : 1.0
-          from: 0; to: 2.0; stepSize: 0.10; decimals: 1; multiplier: 1; suffix: "×"
-        }
-
-        Text {
-          Layout.fillWidth: true
-          visible: root.localError !== "" || (root.preferences && root.preferences.error !== "")
-          text: root.localError !== "" ? root.localError : String(root.preferences ? root.preferences.error : "")
-          textFormat: Text.PlainText
-          wrapMode: Text.WordWrap
-          color: root.urgent
-          font.family: root.fontFamily
-          font.pixelSize: root.fontSize(Style.font.caption)
-        }
-
-        Text {
-          Layout.fillWidth: true
-          text: root.preferences
-            ? (root.preferences.saving ? "Saving…" : root.preferences.notice) + "\n" + root.preferences.configPath
-            : "Preferences unavailable"
-          textFormat: Text.PlainText
-          wrapMode: Text.WrapAnywhere
-          color: Qt.darker(root.foreground, 1.45)
-          font.family: root.fontFamily
-          font.pixelSize: root.fontSize(Style.font.caption)
-        }
-
-        RowLayout {
-          Layout.fillWidth: true
-          spacing: root.space(8)
-          ActionButton {
-            label: "Reload file"
-            onClicked: {
-              root.resetArmed = false
-              root.localError = ""
-              if (root.preferences) root.preferences.load(true)
+            PanelSectionHeader {
+              Layout.fillWidth: true
+              text: "LAYOUT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: root.fontSize(Style.font.caption)
             }
-          }
-          Item { Layout.fillWidth: true }
-          ActionButton {
-            label: root.resetArmed ? "Confirm reset" : "Reset to defaults"
-            danger: root.resetArmed
-            onClicked: {
-              if (!root.resetArmed) {
-                root.resetArmed = true
-                return
+
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: root.space(5)
+              Text {
+                text: "Conversation list time"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: root.fontSize(Style.font.bodySmall)
+                font.bold: true
               }
-              root.resetArmed = false
-              root.localError = ""
-              if (root.preferences) root.preferences.restoreDefaults()
+              RowLayout {
+                spacing: root.space(7)
+                ActionButton {
+                  label: "12-hour (AM/PM)"
+                  selected: !root.preferences || root.preferences.use12HourConversationTimes
+                  onClicked: if (root.preferences)
+                    root.preferences.setBoolean("use12HourConversationTimes", true)
+                }
+                ActionButton {
+                  label: "24-hour"
+                  selected: root.preferences && !root.preferences.use12HourConversationTimes
+                  onClicked: if (root.preferences)
+                    root.preferences.setBoolean("use12HourConversationTimes", false)
+                }
+              }
+            }
+
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Window opacity"
+              preferenceKey: "backgroundOpacity"
+              currentValue: root.preferences ? root.preferences.backgroundOpacity : 0.70
+              from: 0.20; to: 1.0; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
+            }
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Font scale"
+              preferenceKey: "fontScale"
+              currentValue: root.preferences ? root.preferences.fontScale : 1.0
+              from: 0.75; to: 1.50; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
+            }
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Density"
+              preferenceKey: "density"
+              currentValue: root.preferences ? root.preferences.density : 1.0
+              from: 0.70; to: 1.40; stepSize: 0.05; decimals: 0; multiplier: 100; suffix: "%"
+            }
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Sidebar width"
+              preferenceKey: "sidebarWidth"
+              currentValue: root.preferences ? root.preferences.sidebarWidth : 320
+              from: 240; to: 520; stepSize: 10; decimals: 0; multiplier: 1; suffix: " px"
+            }
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Avatar size"
+              preferenceKey: "avatarSize"
+              currentValue: root.preferences ? root.preferences.avatarSize : 30
+              from: 24; to: 64; stepSize: 2; decimals: 0; multiplier: 1; suffix: " px"
+            }
+            PreferenceSlider {
+              Layout.fillWidth: true
+              title: "Corner roundness"
+              preferenceKey: "cornerScale"
+              currentValue: root.preferences ? root.preferences.cornerScale : 1.0
+              from: 0; to: 2.0; stepSize: 0.10; decimals: 1; multiplier: 1; suffix: "×"
+            }
+
+            Text {
+              Layout.fillWidth: true
+              visible: root.localError !== "" || (root.preferences && root.preferences.error !== "")
+              text: root.localError !== "" ? root.localError : String(root.preferences ? root.preferences.error : "")
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+            }
+
+            Text {
+              Layout.fillWidth: true
+              text: root.preferences
+                ? (root.preferences.saving ? "Saving…" : root.preferences.notice) + "\n" + root.preferences.configPath
+                : "Preferences unavailable"
+              textFormat: Text.PlainText
+              wrapMode: Text.WrapAnywhere
+              color: Qt.darker(root.foreground, 1.45)
+              font.family: root.fontFamily
+              font.pixelSize: root.fontSize(Style.font.caption)
+            }
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: root.space(8)
+              ActionButton {
+                label: "Reload file"
+                onClicked: {
+                  root.resetArmed = false
+                  root.localError = ""
+                  if (root.preferences) root.preferences.load(true)
+                }
+              }
+              Item { Layout.fillWidth: true }
+              ActionButton {
+                label: root.resetArmed ? "Confirm reset" : "Reset to defaults"
+                danger: root.resetArmed
+                onClicked: {
+                  if (!root.resetArmed) {
+                    root.resetArmed = true
+                    return
+                  }
+                  root.resetArmed = false
+                  root.localError = ""
+                  if (root.preferences) root.preferences.restoreDefaults()
+                }
+              }
             }
           }
         }
 
         Item { Layout.preferredHeight: root.space(6) }
         }
+      }
+    }
+  }
+
+  component AppearancePreview: Rectangle {
+    id: appearancePreview
+
+    readonly property real opacityValue: root.preferences ? root.preferences.backgroundOpacity : 0.70
+    readonly property int configuredSidebar: root.preferences ? root.preferences.sidebarWidth : 320
+    readonly property int configuredAvatar: root.preferences ? root.preferences.avatarSize : 30
+    readonly property int previewSidebar: Math.round(Math.max(
+      width * 0.28, Math.min(width * 0.57, root.space(configuredSidebar) * 0.56)
+    ))
+    readonly property int previewAvatar: Math.max(
+      root.space(20), Math.round(root.space(configuredAvatar) * 0.76)
+    )
+
+    implicitHeight: root.space(520)
+    radius: root.corner(root.space(12))
+    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.06)
+    border.width: 1
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
+    clip: true
+
+    ColumnLayout {
+      anchors.fill: parent
+      anchors.margins: root.space(12)
+      spacing: root.space(9)
+
+      RowLayout {
+        Layout.fillWidth: true
+        Text {
+          Layout.fillWidth: true
+          text: "LIVE APP PREVIEW"
+          textFormat: Text.PlainText
+          color: root.accent
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+          font.bold: true
+        }
+        Text {
+          text: appearancePreview.configuredSidebar + " px sidebar · "
+            + appearancePreview.configuredAvatar + " px avatars"
+          textFormat: Text.PlainText
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+        }
+      }
+
+      Rectangle {
+        id: previewSurface
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        radius: root.corner(root.space(9))
+        color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b,
+                       appearancePreview.opacityValue)
+        border.width: 1
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.28)
+        clip: true
+
+        RowLayout {
+          anchors.fill: parent
+          spacing: 0
+
+          Item {
+            Layout.preferredWidth: appearancePreview.previewSidebar
+            Layout.fillHeight: true
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: root.space(10)
+              spacing: root.space(9)
+
+              RowLayout {
+                Layout.fillWidth: true
+                Text {
+                  Layout.fillWidth: true
+                  text: "Blip"
+                  textFormat: Text.PlainText
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fontSize(Style.font.body)
+                  font.bold: true
+                }
+                Text {
+                  text: "⚙"
+                  textFormat: Text.PlainText
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fontSize(Style.font.icon)
+                }
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: root.space(34)
+                radius: root.corner(root.space(6))
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.left: parent.left
+                  anchors.leftMargin: root.space(9)
+                  text: "⌕  Search"
+                  textFormat: Text.PlainText
+                  color: Qt.darker(root.foreground, 1.4)
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fontSize(Style.font.caption)
+                }
+              }
+
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: root.space(5)
+                PreviewAvatar {
+                  Layout.fillWidth: true
+                  diameter: appearancePreview.previewAvatar
+                  initials: "AR"
+                  label: "Alex"
+                  selected: true
+                }
+                PreviewAvatar {
+                  Layout.fillWidth: true
+                  diameter: appearancePreview.previewAvatar
+                  initials: "D"
+                  label: "Design"
+                }
+                PreviewAvatar {
+                  Layout.fillWidth: true
+                  diameter: appearancePreview.previewAvatar
+                  initials: "M"
+                  label: "Morgan"
+                }
+              }
+
+              PreviewThreadRow {
+                Layout.fillWidth: true
+                diameter: appearancePreview.previewAvatar * 0.78
+                initials: "JD"
+                name: "Jordan Diaz"
+                detail: "See you at seven"
+                time: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
+              }
+              PreviewThreadRow {
+                Layout.fillWidth: true
+                diameter: appearancePreview.previewAvatar * 0.78
+                initials: "T"
+                name: "Trail crew"
+                detail: "You: Sounds good"
+                time: "Yesterday"
+              }
+              Item { Layout.fillHeight: true }
+            }
+          }
+
+          Rectangle {
+            Layout.preferredWidth: 1
+            Layout.fillHeight: true
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
+          }
+
+          Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: root.space(12)
+              spacing: root.space(10)
+              Text {
+                Layout.fillWidth: true
+                text: "Jordan Diaz"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: root.fontSize(Style.font.body)
+                font.bold: true
+              }
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.20)
+              }
+              Item { Layout.fillHeight: true }
+              RowLayout {
+                Layout.fillWidth: true
+                PreviewBubble {
+                  mine: false
+                  label: "Their bubble"
+                  fillColor: root.incomingFill
+                  textColor: root.incomingText
+                }
+                Item { Layout.fillWidth: true }
+              }
+              RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                PreviewBubble {
+                  mine: true
+                  label: "Your bubble"
+                  fillColor: root.outgoingFill
+                  textColor: root.outgoingText
+                }
+              }
+              Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: root.preferences && !root.preferences.use12HourConversationTimes ? "19:04" : "7:04 PM"
+                textFormat: Text.PlainText
+                color: Qt.darker(root.foreground, 1.45)
+                font.family: root.fontFamily
+                font.pixelSize: root.fontSize(Style.font.caption)
+              }
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: root.space(34)
+                radius: root.corner(root.space(6))
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.24)
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.left: parent.left
+                  anchors.leftMargin: root.space(9)
+                  text: "iMessage"
+                  textFormat: Text.PlainText
+                  color: Qt.darker(root.foreground, 1.5)
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fontSize(Style.font.caption)
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  component PreviewAvatar: ColumnLayout {
+    id: previewAvatarItem
+    property real diameter: root.space(30)
+    property string initials: "A"
+    property string label: "Alex"
+    property bool selected: false
+    spacing: root.space(4)
+
+    Rectangle {
+      Layout.alignment: Qt.AlignHCenter
+      implicitWidth: previewAvatarItem.diameter
+      implicitHeight: previewAvatarItem.diameter
+      radius: width / 2
+      color: previewAvatarItem.selected
+        ? root.accent
+        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+      Text {
+        anchors.centerIn: parent
+        text: previewAvatarItem.initials
+        textFormat: Text.PlainText
+        color: previewAvatarItem.selected ? root.outgoingText : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+        font.bold: true
+      }
+    }
+    Text {
+      Layout.fillWidth: true
+      horizontalAlignment: Text.AlignHCenter
+      text: previewAvatarItem.label
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: root.fontSize(Style.font.caption)
+    }
+  }
+
+  component PreviewThreadRow: RowLayout {
+    id: previewThread
+    property real diameter: root.space(24)
+    property string initials: "A"
+    property string name: "Alex"
+    property string detail: "Message preview"
+    property string time: "7:04 PM"
+    spacing: root.space(7)
+
+    Rectangle {
+      implicitWidth: previewThread.diameter
+      implicitHeight: previewThread.diameter
+      radius: width / 2
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+      Text {
+        anchors.centerIn: parent
+        text: previewThread.initials
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
+      }
+    }
+    ColumnLayout {
+      Layout.fillWidth: true
+      spacing: 0
+      RowLayout {
+        Layout.fillWidth: true
+        Text {
+          Layout.fillWidth: true
+          text: previewThread.name
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+          font.bold: true
+        }
+        Text {
+          text: previewThread.time
+          textFormat: Text.PlainText
+          color: Qt.darker(root.foreground, 1.45)
+          font.family: root.fontFamily
+          font.pixelSize: root.fontSize(Style.font.caption)
+        }
+      }
+      Text {
+        Layout.fillWidth: true
+        text: previewThread.detail
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Qt.darker(root.foreground, 1.4)
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSize(Style.font.caption)
       }
     }
   }
