@@ -377,7 +377,18 @@ describe("selectThread", () => {
 });
 
 describe("linkify", () => {
-  const { linkify, standaloneUrl } = require("./thread") as typeof import("./thread");
+  const { linkify, standaloneUrl, standaloneEmoji } = require("./thread") as typeof import("./thread");
+
+  test("recognizes only short emoji-only messages as expressive", () => {
+    expect(standaloneEmoji("🤗")).toBe(true);
+    expect(standaloneEmoji("❤️ 👍🏽")).toBe(true);
+    expect(standaloneEmoji("👨‍👩‍👧‍👦")).toBe(true);
+    expect(standaloneEmoji("🇺🇸")).toBe(true);
+    expect(standaloneEmoji("1️⃣")).toBe(true);
+    expect(standaloneEmoji("hello 🤗")).toBe(false);
+    expect(standaloneEmoji("🤗🤗🤗🤗")).toBe(false);
+    expect(standaloneEmoji(" ")).toBe(false);
+  });
 
   test("no URL → empty string (PlainText fast path)", () => {
     expect(linkify("just words")).toBe("");
@@ -507,6 +518,12 @@ describe("rich decoration", () => {
     expect(out[0]!.edited).toBe(false);
     expect(out[0]!.retracted).toBe(false);
     expect(out[0]!.linkOnly).toBe(false);
+    expect(out[0]!.emojiOnly).toBe(false);
+  });
+
+  test("decorates an emoji-only message for expressive rendering", () => {
+    const out = decorate([msg({ text: "🤗" })], today);
+    expect(out[0]!.emojiOnly).toBe(true);
   });
 });
 

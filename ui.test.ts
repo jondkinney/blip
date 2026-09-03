@@ -100,13 +100,34 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("function opaqueOver(fill, background)");
     expect(panel).toContain("id: tapbackTailLarge");
     expect(panel).toContain("id: tapbackTailSmall");
+    expect(panel).toContain("component TapbackReaction: Rectangle");
+    expect(panel).toContain("reactions: modelData.link ? [] : (modelData.tapbacks || [])");
     expect(panel).not.toContain("color: bubble.color\n                      anchors.bottom");
+  });
+
+  test("standalone emoji use expressive Messages-style sizing without a bubble", () => {
+    expect(panel).toContain("readonly property bool expressiveEmoji: modelData.emojiOnly === true");
+    expect(panel).toContain("visible: !bubble.expressiveEmoji");
+    expect(panel).toContain("root.fontSize(Style.font.bodySmall) * 4.1");
+  });
+
+  test("group messages reserve one avatar lane and paint only at run end", () => {
+    expect(panel).toContain("component GroupMessageAvatarSlot: Item");
+    expect(panel).toContain("readonly property bool runEndsHere: incomingGroup && modelData.groupEnd === true");
+    expect(panel).toContain("showAvatar: bubbleRow.runEndsHere && !bubbleRow.hasTextBubble");
+    expect(panel).toContain("root.requestAvatar(handle)");
   });
 
   test("inline media has a logical-width cap on wide and high-DPI windows", () => {
     expect(panel).toContain("Math.round(content.width * 0.6), root.space(380)");
     expect(panel).toContain("Number(chipRow.imageMetrics.pixelWidth) / pixelRatio");
     expect(panel).toContain("metrics[id] = { pixelRatio: ratio, pixelWidth: pixelWidth, pixelHeight: pixelHeight }");
+  });
+
+  test("link previews keep portrait artwork and pinned group titles", () => {
+    expect(panel).toContain("Math.min(root.space(480)");
+    expect(panel).toContain("fillMode: Image.PreserveAspectFit");
+    expect(panel).toContain("root.active.pin_name || root.active.name || root.active.chat");
   });
 
   test("the app sidebar does not duplicate the window's outer left inset", () => {
