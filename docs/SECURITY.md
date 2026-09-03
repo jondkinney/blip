@@ -85,10 +85,13 @@ name. The settings resolver is a separate, explicit path with these limits:
   and only then removes through its supported scripting API. One private,
   seven-day Mac-local receipt supports an immediate exact-field undo.
 - Consolidation and whole-card deletion receive only the revalidated private
-  card identifiers and bounded draft over stdin, then batch the exact update
-  and deletions with Apple's public `CNSaveRequest` API. The compiled helper
-  rejects oversized or malformed input, returns no identifiers, and is not
-  exposed by the dedicated SSH forced-command allowlist.
+  card identifiers and bounded draft over stdin, then use Apple's public
+  `CNSaveRequest` API. Same-account changes share one request; cross-account
+  consolidation saves the complete survivor first and deletes sources in
+  container-scoped requests because Contacts rejects cross-store transactions.
+  The compiled helper fetches non-unified source records, rejects oversized or
+  malformed input, returns no identifiers, and is not exposed by the dedicated
+  SSH forced-command allowlist.
 - Native link/merge uses Contacts' exact current selection and one allowlisted,
   enabled menu action through Accessibility. Preview and execution are separate;
   execution pins the action text the user confirmed and aborts if it changes.

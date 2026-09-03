@@ -5,7 +5,9 @@
 - Fix contact deletion and consolidation on macOS. Contacts.app does not expose
   a scriptable delete command; Blip now applies the already previewed, exact-card
   deletion through Apple's current Contacts framework and verifies every removal
-  before reporting success.
+  before reporting success. Cross-account merges save the complete surviving card
+  first, then delete source cards in account-scoped requests because Contacts can
+  reject one save request spanning iCloud and Google backing stores.
 - Replace the disabled edit form shown after contact-change preparation with a
   focused read-only review. Consolidation now names the card that will remain,
   the source cards that will be removed, the complete merged contact, and a
