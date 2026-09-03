@@ -52,11 +52,11 @@ function normalizeRequest(value) {
     || value.operation === "undo" || value.operation === "edit"
     || value.operation === "delete" || value.operation === "restore"
     || value.operation === "consolidate" || value.operation === "undo-consolidate"
-    || value.operation === "discard-unsaved"
+    || value.operation === "discard-unsaved" || value.operation === "delete-fallback"
     ? value.operation : "";
   if (!operation) throw new Error("repair operation is invalid");
   if (operation === "discard-unsaved") return { operation: operation };
-  if (operation === "available") {
+  if (operation === "available" || operation === "delete-fallback") {
     if (!Array.isArray(value.personUids) || value.personUids.length < 1
         || value.personUids.length > MAX_PERSON_IDS)
       throw new Error("person id list is invalid");
@@ -350,9 +350,29 @@ function sameCard(person, expected) {
 }
 
 function removeAll(contacts, person, property) {
+  // The remove-from-person Apple event errors with "Message not understood"
+  // on current macOS (verified live 2026-09-03); deleting the entry
+  // specifier is the pattern that works.
   const entries = person[property]();
   for (let i = entries.length - 1; i >= 0; i--)
-    contacts.remove(entries[i], { from: person });
+    contacts.delete(entries[i]);
+}
+
+// When every existing entry survives the edit, return just the additions so
+// setCard can skip the removal pass entirely — removing a damaged stored row
+// fails ("Message not understood") where additions still work, and existing
+// entries keep their stable field ids. Returns null when anything is removed
+// or relabeled, which forces the full replace path.
+function addedEntries(existing, desired) {
+  const pool = existing.map(function(entry) { return entry.label + "\u0000" + entry.value; });
+  const added = [];
+  for (let i = 0; i < desired.length; i++) {
+    const key = desired[i].label + "\u0000" + desired[i].value;
+    const at = pool.indexOf(key);
+    if (at >= 0) pool.splice(at, 1);
+    else added.push(desired[i]);
+  }
+  return pool.length === 0 ? added : null;
 }
 
 function sameCollection(actual, desired) {
@@ -393,24 +413,30 @@ function setCard(contacts, person, card) {
   // changes only a scalar such as middle name. When replacement is needed,
   // remove the concrete specifiers returned by Contacts; calling `.at()` on
   // the property function produces a malformed Apple event on current macOS.
-  const phonesChanged = !sameCollection(labeledValues(person, "phones", "phone"), card.phones);
-  const emailsChanged = !sameCollection(labeledValues(person, "emails", "email"), card.emails);
+  const existingPhones = labeledValues(person, "phones", "phone");
+  const existingEmails = labeledValues(person, "emails", "email");
+  const phonesChanged = !sameCollection(existingPhones, card.phones);
+  const emailsChanged = !sameCollection(existingEmails, card.emails);
   const urlsChanged = !sameCollection(labeledValues(person, "urls", "URL"), card.urls);
   const addressesChanged = !sameCollection(addressValues(person), card.addresses);
-  if (phonesChanged)
+  const phonesAdded = phonesChanged ? addedEntries(existingPhones, card.phones) : [];
+  const emailsAdded = emailsChanged ? addedEntries(existingEmails, card.emails) : [];
+  if (phonesChanged && phonesAdded === null)
     cardStep("phone numbers", function() { removeAll(contacts, person, "phones"); });
-  if (emailsChanged)
+  if (emailsChanged && emailsAdded === null)
     cardStep("email addresses", function() { removeAll(contacts, person, "emails"); });
   if (urlsChanged)
     cardStep("websites", function() { removeAll(contacts, person, "urls"); });
   if (addressesChanged)
     cardStep("postal addresses", function() { removeAll(contacts, person, "addresses"); });
-  for (let i = 0; phonesChanged && i < card.phones.length; i++) {
-    const field = card.phones[i];
+  const phonesToWrite = phonesAdded === null ? card.phones : phonesAdded;
+  const emailsToWrite = emailsAdded === null ? card.emails : emailsAdded;
+  for (let i = 0; phonesChanged && i < phonesToWrite.length; i++) {
+    const field = phonesToWrite[i];
     cardStep("phone number " + String(i + 1), function() { addField(contacts, person, "phone", field); });
   }
-  for (let i = 0; emailsChanged && i < card.emails.length; i++) {
-    const field = card.emails[i];
+  for (let i = 0; emailsChanged && i < emailsToWrite.length; i++) {
+    const field = emailsToWrite[i];
     cardStep("email address " + String(i + 1), function() { addField(contacts, person, "email", field); });
   }
   for (let i = 0; urlsChanged && i < card.urls.length; i++) {
@@ -418,7 +444,7 @@ function setCard(contacts, person, card) {
     cardStep("website " + String(i + 1), function() {
       const properties = { value: field.value };
       if (field.label) properties.label = field.label;
-      contacts.add(contacts.Url(properties), { to: person });
+      person.urls.push(contacts.Url(properties));
     });
   }
   for (let i = 0; addressesChanged && i < card.addresses.length; i++) {
@@ -427,7 +453,7 @@ function setCard(contacts, person, card) {
       const properties = { street: source.street, city: source.city, state: source.state,
         zip: source.postalCode, country: source.country, countryCode: source.countryCode };
       if (source.label) properties.label = source.label;
-      contacts.add(contacts.Address(properties), { to: person });
+      person.addresses.push(contacts.Address(properties));
     });
   }
 }
@@ -451,7 +477,10 @@ function addField(contacts, person, kind, field) {
   const properties = { value: field.value };
   if (field.label) properties.label = field.label;
   const entry = kind === "email" ? contacts.Email(properties) : contacts.Phone(properties);
-  contacts.add(entry, { to: person });
+  // The add-to-person Apple event errors with "No error. (0)" on
+  // current macOS; pushing onto the person's own collection is the pattern
+  // that works (verified live 2026-09-03, macOS 15.5).
+  person[kind === "email" ? "emails" : "phones"].push(entry);
 }
 
 function perform(request) {
@@ -505,6 +534,18 @@ function perform(request) {
     return { ok: true, restored: true, card: describePerson(target),
       sourceCount: request.restoreCards.length };
   }
+  if (request.operation === "delete-fallback") {
+    // CNContactStore deletion faults with Cocoa 134092 when a card holds a
+    // damaged stored row; Contacts.app itself can still remove it (verified
+    // live 2026-09-03). Native deletion stays the primary path — the caller
+    // reaches this only after it failed on exact, already-confirmed uids.
+    if (Contacts.unsaved())
+      throw new Error("Contacts has unsaved changes; finish or discard them on the Mac first");
+    const doomed = request.personUids.map(function(uid) { return peopleForId(Contacts, uid); });
+    for (let i = 0; i < doomed.length; i++) Contacts.delete(doomed[i]);
+    Contacts.save();
+    return { ok: true, deletedCount: doomed.length };
+  }
   if (request.operation === "consolidate") {
     const people = [peopleForId(Contacts, request.targetUid)].concat(
       request.sourceUids.map(function(uid) { return peopleForId(Contacts, uid); })
@@ -548,8 +589,10 @@ function perform(request) {
   if (request.operation === "remove") {
     if (!sameFieldSet(current, request.fields))
       throw new Error("the selected card changed; review it again before removing anything");
+    // delete-the-specifier: the remove-from-person event is broken on
+    // current macOS ("Message not understood")
     for (let i = current.length - 1; i >= 0; i--)
-      Contacts.remove(current[i].specifier, { from: person });
+      Contacts.delete(current[i].specifier);
     try {
       Contacts.save();
     } catch (error) {
