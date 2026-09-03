@@ -198,6 +198,8 @@ describe("QML safety invariants", () => {
     expect(identitySettings).toContain("Short codes and service senders can simply be left alone.");
     expect(identitySettings).toContain("Review contact…");
     expect(identitySettings).toContain("Review anyway…");
+    expect(identitySettings).toContain("var started = resolver.findCandidates(handle)");
+    expect(identitySettings).toContain("directContactPending = directEdit === true && started");
     expect(identitySettings).toContain("Hide short-code senders");
     expect(identitySettings).not.toContain(".slice(0, 12)");
     expect(identitySettings).toContain("phone/email conversations to review");

@@ -213,7 +213,8 @@ ColumnLayout {
     customField.text = saved && saved.source === "custom" ? saved.name : ""
     namingExpanded = false
     macReviewExpanded = false
-    directContactPending = directEdit === true && resolver.findCandidates(handle)
+    var started = resolver.findCandidates(handle)
+    directContactPending = directEdit === true && started
   }
   function editContact(handle) {
     beginReview(handle, true)
