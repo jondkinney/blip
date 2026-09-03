@@ -28,6 +28,22 @@ BarWidget {
   // app update together, and external dotfile restores are picked up live.
   BlipPreferences { id: preferences }
 
+  // Clock and date patterns from this widget's shell.json entry — Qt format
+  // strings, exactly as Omarchy's clock takes `format`. Qt formats the list
+  // with them and thread.ts formats the bubbles with the same strings, so the
+  // two never disagree. An explicit shell.json format wins; otherwise the
+  // portable Blip preference decides 12- vs 24-hour, and an unloaded
+  // preference file falls back to the locale (an AM/PM marker = 12-hour).
+  readonly property string localeTimeFormat:
+    /ap/i.test(Qt.locale().timeFormat(Locale.ShortFormat)) ? "h:mm AP" : "HH:mm"
+  readonly property string preferredTimeFormat: preferences.loaded
+    ? (preferences.use12HourConversationTimes ? "h:mm AP" : "HH:mm")
+    : localeTimeFormat
+  readonly property string timeFormat: formatSetting("timeFormat", preferredTimeFormat)
+  readonly property string dateFormat: formatSetting("dateFormat", "MMM d")
+  readonly property string dateFormatWithYear: formatSetting("dateFormatWithYear", "MMM d, yyyy")
+  function formatSetting(name, fallback) { var v = String(setting(name, "")); return v === "" ? fallback : v }
+
   // ---- collector state
   property var threads: []           // [{chat,name,handle,service,last_ts,last_text,last_from_me,count,unread,pinned,pin_order}]
   property string threadsJson: ""    // last assigned list, for no-op detection

@@ -171,11 +171,22 @@ what it is handed. Keep it that way.
   (`name_for`) and photos (`cmd_avatar`) treat a collision only WITHIN one
   source as ambiguous; across sources the most common spelling wins. Got
   this wrong twice (2.0.0 photos, 1.9.4 names → "Rob T shows as a number").
+  EXCEPTION: a Family Sharing child's address book (Screen Time ▸ Manage
+  Contacts) is mirrored to the parent's Mac as its OWN CardDAV store under
+  `AddressBook/Sources/<id>/`, flagged `isChildDelegate` in
+  `~/Library/Accounts/Accounts4.sqlite`. Contacts.app hides those from All
+  Contacts; `_ab_sources()` drops them before the vote, or two sons' "Mom"
+  cards outvote your own "Monica Gamble" for the same number.
 - **`chat:null` exists.** Use `chatKey()`; never `String(m.chat)`.
 - **Group ids come in two shapes**: 32 hex, or `chat<digits>`. `isGroupChat()` is
   "not a phone/email" — never a positive regex on one shape.
 - **Deleted messages stay in chat.db for 30 days** (`chat_recoverable_message_join`).
   claude-on-mac's `imsg` hides them (1.4.0+); Blip assumes that.
+- **Announcements are not messages.** Joins, leaves, renames and location-sharing
+  notices share the message table with `item_type != 0`, and Apple never marks
+  them read. `imsg` hides them at the source; let one through and it is an
+  empty bubble that counts as unread forever. Group names still come from
+  rename rows (`cmd_groups` reads the raw table).
 - **The conversation Flickable is `interactive: false`.** An interactive
   Flickable grabs every drag, and drag IS text selection in a bubble; a
   slightly-moving click on a link became a flick. Wheel scrolling never

@@ -274,6 +274,64 @@
   addresses; confirmed whole-card deletion; and editable multi-card
   consolidation into a chosen source account. Every apply revalidates its
   preview and saves a private bounded undo receipt first.
+
+## 2.3.0 — 2026-09-03 — the contributors' release
+
+- **Photos in a message stopped arriving once they were full-size.** Someone
+  sending two pictures at once got two grey chips and no pictures. The cause
+  was a cap measured against the wrong number: `sips` turns a 5.07 MB iPhone
+  HEIC into a **7.80 MB** JPEG, so a photo could pass the 5 MB auto-fetch gate
+  on its source size and then be rejected for exceeding the same 5 MB as a
+  converted transfer — or fail the gate first and never be asked for at all.
+  Both of a real two-photo message failed, one at each end.
+  Now the Mac resamples an auto-fetch to 1600 px on the long edge (`imsg
+  attachment --max-dim`), which is generous for a bubble that draws at 800,
+  and those two photos arrive at 0.86 MB and 0.73 MB instead of 7.80 and 6.33.
+  Previews live in their own cache slot (`<id>-prev-…`, always `.jpg` because
+  they always are), so **clicking a photo still fetches the untouched
+  original**. Applies to every image, not just HEIC: a 12 MP PNG was just as
+  slow shipped raw. Mac side: re-run the install one-liner.
+
+- **Your kids' contact lists no longer rename your contacts.** Family
+  Sharing's "Manage Contacts" (Screen Time) mirrors each child's address book
+  onto the parent's Mac as a separate Contacts store. Contacts.app keeps those
+  out of All Contacts, but the bridge read every store on disk and let them
+  vote on names — so with two sons, the number saved as "Monica Gamble" in
+  your own contacts showed as "Mom" in every Blip thread, tile and group
+  name, two votes to one. `imsg`, `contacts` and `blip-check` now skip stores
+  whose account is flagged `isChildDelegate` in the Accounts database; a Mac
+  where that database cannot be read behaves exactly as before. `blip-check`
+  says how many child lists it ignored. Mac side: re-run the install
+  one-liner. Names and photos that exist ONLY in a child's list fall back to
+  the bare number, which is what Contacts.app shows you too.
+- **Location-sharing notices no longer show up as empty unread messages.**
+  Messages.app writes its own announcements — someone joined or left, a
+  rename, location sharing started or stopped — into the message table with
+  `item_type != 0`, and never marks them read. The bridge passed them through,
+  so each one became an empty bubble that counted as unread forever and pulled
+  its conversation to the top; an iCloud re-sync after a restart lands several
+  at once. `imsg` now hides them at the source, next to Recently Deleted, so
+  every query agrees. Group names are unaffected: rename rows are still read
+  for that. Mac side: re-run the install one-liner so `~/.blip/bin/imsg` picks
+  it up.
+- **Clock and dates are yours to set.** Bubble times and read receipts were
+  hardcoded 12-hour while the conversation list showed 24-hour — two clocks
+  in one window, and no setting for either. Both now follow three Qt format
+  strings on the widget's shell.json entry, the way Omarchy's clock takes its
+  `format`: `timeFormat`, `dateFormat` (day dividers this year) and
+  `dateFormatWithYear`. Unset, the time follows your locale and dates read as
+  before, so nothing changes until you ask.
+- **Jump to a conversation with 1–9.** Super+M then a digit opens that
+  sidebar thread without Enter. The first nine rows (pins first) show the
+  digit. A digit that cannot open a thread is typed, not eaten. Shifted
+  number keys and a queued file with an empty caption stay in compose.
+  (Johan Thorén)
+- **Super+M keys, live search, and whole-word ranking.** The app window
+  honors `n`, `/`, and Esc the way the popout does. New-message and `/`
+  search as you type. Conversations match first, then messages. Whole-word
+  hits (case-insensitive) rank above substrings, then by message time.
+  `imsg search` also scans capitalized needles in `attributedBody`, because
+  newer messages often have a null `text` column. (Johan Thorén)
 - **Reads now reach the Mac, and your phone.** Blip's "mark all read" cleared
   the badge on Linux and nothing else; the iPhone kept its red dots. The old
   note called this impossible because `open imessage://<handle>` does not flip

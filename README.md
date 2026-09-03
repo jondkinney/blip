@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-2.2.3-0a84ff?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-2.3.0-0a84ff?style=flat-square">
   <img alt="Omarchy" src="https://img.shields.io/badge/Omarchy-plugin-5fd7ff?style=flat-square">
   <img alt="QuickShell" src="https://img.shields.io/badge/QuickShell-QML-0a84ff?style=flat-square">
   <img alt="bun" src="https://img.shields.io/badge/bun-TypeScript-f9f1e1?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-314%20passing-2ea043?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-372%20passing-2ea043?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square">
 </p>
 
@@ -34,7 +34,7 @@
 <p align="center">
   <img src="docs/img/panel.png" alt="The bar popout: pinned conversations as tiles above the thread list" width="330">
   &nbsp;
-  <img src="docs/img/panel-conversation.png" alt="A conversation in the bar popout, with a tapback, a link card and a read receipt" width="330">
+  <img src="docs/img/panel-conversation.png" alt="A conversation in the bar popout: two photos from one message, both inline, and a read receipt" width="330">
 </p>
 
 <p align="center">
@@ -46,7 +46,7 @@
   </sub>
 </p>
 
-## Blip 2.2
+## Blip 2.3
 
 Blip went public on 2026-08-31 and has moved fast since, much of it from
 people who showed up with pull requests. What is in it now:
@@ -71,8 +71,8 @@ people who showed up with pull requests. What is in it now:
   send by Ctrl+V / drag-and-drop / `/attach`, with captions.
 - **SMS and RCS** send on their own service instead of failing as iMessage,
   and short-code senders (banks, utilities, 2FA) open like any other thread.
-- **Search** across every message ever; **new conversation** from a contact
-  search; **reply from a toast**; failed-delivery flags.
+- **Search** conversations by name, then messages; **new conversation** from a
+  contact search; **reply from a toast**; failed-delivery flags.
 - **One source.** The Mac-side tools ship in this repo; `blip-setup` installs
   everything including a dedicated ssh key the Mac confines to the five
   bridge tools.
@@ -309,6 +309,15 @@ cloned by hand: `omarchy plugin enable nixfred.blip --section right`, or add
 `~/.config/omarchy/shell.json`. Then `omarchy-restart-shell` — the speech
 bubble is in your bar.
 
+**Clock and dates.** Out of the box the time follows your locale — `9:08 PM`
+or `21:08` — and dates read the way Messages writes them: `Aug 28`, or
+`Aug 28, 2025` for another year. To change either, put Qt format strings on
+the same entry, exactly as Omarchy's clock takes its `format`:
+
+```jsonc
+{ "id": "nixfred.blip", "timeFormat": "HH:mm", "dateFormat": "dd.MM", "dateFormatWithYear": "dd.MM.yyyy" }
+```
+
 **5. (Optional) `SUPER+M` for the app window** — the Lua snippet under
 "The app" above.
 
@@ -457,10 +466,10 @@ name is available when no source card exists.
 | where | key | does |
 |---|---|---|
 | list | `j` / `k` · `↑` / `↓` | move |
-| list | `Enter` · `1`–`9` | open thread |
+| list | `Enter` · `1`–`9` | open thread (the first nine rows show the digit; Super+M jumps from an empty compose) |
 | list | `r` | refresh |
 | list | `a` · *mark all read* link | clear every badge and dot — and tell the Mac, so your iPhone catches up too |
-| list | `/` | search every message ever — Enter runs it, click a hit to open its conversation, Esc backs out |
+| list | `/` | search conversations by name as you type, then messages; Enter opens the highlight, Esc backs out |
 | list | `n` · *＋ new* link | start a conversation with anyone — search contacts by name, or type a number/email directly |
 | thread | `Enter` | send (text, or the queued file with the text as caption) |
 | thread | `Ctrl+V` | paste — an image on the clipboard becomes a queued file, text pastes normally |
@@ -515,6 +524,11 @@ Deleted" bin that is still in `chat.db`. claude-on-mac's `imsg` hides those rows
 a conversation you delete on the phone disappears from Blip within one poll of
 the iCloud sync. `IMSG_INCLUDE_DELETED=1` shows them again.
 
+**Notices are not messages.** Messages.app writes its grey centered notices —
+someone joined, a group was renamed, location sharing started — into the same
+table as messages, and never marks them read. `imsg` hides them, or every one
+would be an empty bubble that counts as unread until the end of time.
+
 **No message bodies are stored on Linux.** `~/.local/state/blip/state.json`
 holds timestamps, unread counts, SHA-256 toast-dedupe keys, inferred self-chat
 ids, and group metadata. It is written atomically with mode `0600`; legacy
@@ -536,7 +550,7 @@ The 273,000-message history stays on the Mac where it lives.
 ## Development
 
 ```sh
-bun test                                     # 314 tests, ~200 ms
+bun test                                     # 372 tests, ~200 ms
 bun collector.ts --deep | jq '.unread, (.threads|length)'
 bun thread.ts +15551234567 40 | jq '.bubbles[-1]'
 scripts/demo/blip-shots                      # regenerate docs/img/*.png

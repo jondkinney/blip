@@ -44,6 +44,16 @@ FloatingWindow {
   function shareLink(url) { return view.shareLink(url) }
   function openSettings(page) { view.openSettings(page) }
   function pushReload() { view.pushReload() }
+  function navText(event) {
+    if (event.key === Qt.Key_Slash) return "/"
+    if (event.key === Qt.Key_N) return "n"
+    var typed = event.text
+    if (typed && typed.length > 0) return typed
+    if (event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+      return ""
+    if (event.key >= Qt.Key_1 && event.key <= Qt.Key_9) return String.fromCharCode(event.key)
+    return typed
+  }
 
   // ---- persistence: the window lives inside the shell process, so every
   // omarchy-restart-shell (every plugin deploy/update) would kill it. Remember
@@ -87,25 +97,41 @@ FloatingWindow {
       if (event.key === Qt.Key_Escape) {
         if (!view.unwind()) win.visible = false
         event.accepted = true
+        return
       }
+      if (view.catchNavText(win.navText(event))) event.accepted = true
     }
 
-    BlipView {
-      id: view
+    Item {
+      id: navCatcher
       anchors.fill: parent
-      // Inset from the window edge: Hyprland rounds the corners, and text
-      // flush to the border got clipped by the radius (Fred).
-      anchors.margins: Math.max(1, Math.round(Style.spaceReal(12)
-        * (win.preferences ? win.preferences.density : 1.0)))
-      hostWidget: win.hostWidget
-      preferences: win.preferences
-      splitView: true
-      surfaceOpen: win.visible
-      readActive: win.focused
-      foreground: Color.foreground
-      urgent: Color.urgent
-      fontFamily: Style.font.family
-      onNavigationFocusRequested: scope.forceActiveFocus()
+      focus: true
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape && view.catchEscape()) {
+          event.accepted = true
+          return
+        }
+        if (view.catchNavText(win.navText(event))) event.accepted = true
+      }
+
+      BlipView {
+        id: view
+        anchors.fill: parent
+        // Inset from the window edge: Hyprland rounds the corners, and text
+        // flush to the border got clipped by the radius (Fred).
+        anchors.margins: Math.max(1, Math.round(Style.spaceReal(12)
+          * (win.preferences ? win.preferences.density : 1.0)))
+        hostWidget: win.hostWidget
+        preferences: win.preferences
+        splitView: true
+        surfaceOpen: win.visible
+        readActive: win.focused
+        foreground: Color.foreground
+        urgent: Color.urgent
+        fontFamily: Style.font.family
+        onNavigationFocusRequested: navCatcher.forceActiveFocus()
+      }
     }
   }
 }

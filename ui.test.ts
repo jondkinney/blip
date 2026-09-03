@@ -12,6 +12,13 @@ const identities = readFileSync(new URL("./BlipIdentities.qml", import.meta.url)
 const identityHelper = readFileSync(new URL("./identities.ts", import.meta.url), "utf8");
 const preferences = readFileSync(new URL("./BlipPreferences.qml", import.meta.url), "utf8");
 const popout = readFileSync(new URL("./Panel.qml", import.meta.url), "utf8");
+const window = readFileSync(new URL("./BlipWindow.qml", import.meta.url), "utf8");
+
+function handleTextKeySource() {
+  const start = panel.indexOf("function handleTextKey");
+  const end = panel.indexOf("function unwind");
+  return panel.slice(start, end);
+}
 
 describe("QML safety invariants", () => {
   test("group sends use the cached AppleScript GUID", () => {
@@ -61,6 +68,9 @@ describe("QML safety invariants", () => {
     expect(panel).toContain("var sentUrl = root.firstUrl(completedText)");
     expect(panel).toContain("function openApp()");
     expect(panel).toContain('hostWidget.showApp()');
+    // the popout gets out of the way, and closes BEFORE the window is shown
+    expect(panel).toContain('hostWidget.close()');
+    expect(panel.indexOf("hostWidget.close()")).toBeLessThan(panel.indexOf("hostWidget.showApp()"));
     expect(panel).toContain('tooltipText: "Open the app window (SUPER+M)"');
   });
 
@@ -208,7 +218,7 @@ describe("QML safety invariants", () => {
     expect(settings).toContain("previewBubble.mine ? previewBubble.height");
     expect(settings).toContain('label: "12-hour (AM/PM)"');
     expect(settings).toContain('setBoolean("use12HourConversationTimes", true)');
-    expect(panel).toContain("preferences.use12HourConversationTimes");
+    expect(widget).toContain("preferences.use12HourConversationTimes");
   });
 
   test("settings opens on the appearance tab, listed first", () => {
@@ -531,4 +541,53 @@ describe("QML safety invariants", () => {
     expect(identities).toContain("function applyMutation()");
     expect(identities).toContain("mutationPreview.planHash");
   });
+
+  test("app window routes n, slash, digits, and Esc through catch helpers", () => {
+    expect(window).toContain("view.catchNavText(");
+    expect(window).toContain("view.catchEscape()");
+    expect(window).toContain("navCatcher.forceActiveFocus()");
+    expect(window).toContain("win.navText(");
+    const nav = window.slice(window.indexOf("function navText"), window.indexOf("function saveWinState"));
+    expect(nav.indexOf("var typed = event.text")).toBeLessThan(nav.indexOf("Qt.Key_1"));
+    expect(nav).toContain("Qt.ShiftModifier");
+  });
+
+  test("handleTextKey runs slash, n, and 1-9 before the inThread return", () => {
+    const fn = handleTextKeySource();
+    expect(fn.indexOf('text === "/"')).toBeLessThan(fn.indexOf("inThread"));
+    expect(fn.indexOf('text === "n"')).toBeLessThan(fn.indexOf("inThread"));
+    expect(fn.indexOf('text >= "1"')).toBeLessThan(fn.indexOf("inThread"));
+    expect(fn).toContain("if (i < 0 || i >= navigationThreads.length) return false");
+    expect(fn).toContain("openThread(navigationThreads[i])");
+  });
+
+  test("sidebar rows show the 1-9 jump digit", () => {
+    expect(panel).toContain("function threadHotkey");
+    expect(panel.split("text: root.threadHotkey(modelData)").length - 1).toBe(1);
+    const catcher = panel.slice(panel.indexOf("function catchNavText"), panel.indexOf("function catchEscape"));
+    expect(catcher).toContain('text >= "1" && text <= "9"');
+    expect(catcher).toContain("root.draftPath");
+    expect(catcher).toContain("return handleTextKey(text) === true");
+    const fn = handleTextKeySource();
+    expect(fn).toContain("if (searching || newMode) return false");
+  });
+
+  test("conversation search is scheduled from the field text, people first", () => {
+    expect(panel).toContain("if (q !== searchQueryRan) searchSeq++");
+    expect(panel).toContain("function scheduleSearch");
+    expect(panel).toContain("function conversationHits");
+    expect(panel).toContain("id: searchWatch");
+    expect(panel).toContain("function threadIdentitiesJson");
+    expect(panel).toContain("searchProc.write(threadIdentitiesJson())");
+    expect(panel).toContain("onAccepted: root.acceptSearchField()");
+  });
+
+  test("new-message contact search is scheduled from the field text, not only Enter", () => {
+    expect(panel).toContain("function scheduleContactSearch");
+    expect(panel).toContain("function newFieldQuery");
+    expect(panel).toContain("id: newSearchWatch");
+    expect(panel).toContain("running: root.newMode");
+    expect(panel).toContain("newSearchTimer.restart()");
+    expect(panel).not.toContain("forceLayout");
+    expect(panel.indexOf("onAccepted: root.acceptNewField()")).toBeGreaterThan(-1);  });
 });

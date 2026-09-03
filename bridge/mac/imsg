@@ -50,6 +50,53 @@ _AB_GLOB = os.path.expanduser(
     "~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb"
 )
 
+_ACCOUNTS_DB = os.path.expanduser("~/Library/Accounts/Accounts4.sqlite")
+
+
+def _archived_bool(blob) -> bool:
+    """True when an NSKeyedArchiver plist archives the single value YES."""
+    try:
+        p = plistlib.loads(blob)
+        root = p["$top"]["root"]
+        v = p["$objects"][root.data] if isinstance(root, plistlib.UID) else root
+        return v is True
+    except Exception:
+        return False
+
+
+def _child_delegate_sources() -> set[str]:
+    """Identifiers of Contacts stores that mirror a Family Sharing child's
+    address book (Screen Time -> Manage Contacts). Each child gets its own
+    CardDAV store under AddressBook/Sources/<id>/, and the Accounts database
+    flags that account with isChildDelegate = YES. Contacts.app keeps them out
+    of All Contacts; the bridge must too, or a child's "Mom" card outvotes your
+    own spelling of the same number (two sons, two "Mom"s, one "Monica").
+    Any failure -> empty set, i.e. the old read-every-source behavior."""
+    out: set[str] = set()
+    try:
+        con = sqlite3.connect(f"file:{_ACCOUNTS_DB}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT a.ZIDENTIFIER, p.ZVALUE FROM ZACCOUNTPROPERTY p "
+            "JOIN ZACCOUNT a ON a.Z_PK = p.ZOWNER WHERE p.ZKEY = 'isChildDelegate'"
+        ).fetchall()
+        con.close()
+    except sqlite3.DatabaseError:
+        return out
+    for ident, blob in rows:
+        if ident and _archived_bool(blob):
+            out.add(str(ident))
+    return out
+
+
+def _ab_sources() -> list[str]:
+    """Every AddressBook source db that belongs to the user, sorted, minus the
+    child-delegate mirrors. The Sources/<id>/ folder name IS the account id."""
+    skip = _child_delegate_sources()
+    return [
+        p for p in sorted(glob(_AB_GLOB))
+        if os.path.basename(os.path.dirname(p)) not in skip
+    ]
+
 
 def _normalize_phone(s: str) -> str:
     digits = re.sub(r"\D", "", s or "")
@@ -57,6 +104,37 @@ def _normalize_phone(s: str) -> str:
 
 
 _NAME_INDEX: dict[str, str] | None = None
+
+
+def _is_dm_id(s: str | None) -> bool:
+    """True for a chat_identifier that names a PERSON rather than a group.
+
+    Groups are `chat<digits>` or 32 hex chars (see cmd_groups); a DM's
+    chat_identifier IS the counterpart's handle. The guard matters: name_for
+    keys on the last ten digits, so a group id's digits could otherwise
+    collide with a real contact, and a group member's name must come from the
+    sender alone or your own messages get labelled with the group.
+    """
+    s = (s or "").strip()
+    if not s:
+        return False
+    if "@" in s:
+        return True
+    if re.fullmatch(r"chat\d+", s) or re.fullmatch(r"[0-9a-f]{32}", s, re.I):
+        return False
+    return bool(re.fullmatch(r"\+?\d[\d\s\-().]*", s))
+
+
+def _dm_name(handle: str | None, chat_identifier: str | None) -> str | None:
+    """The name to show for a row. An OUTBOUND row has no handle, and both
+    JSON paths used to fall through to the raw chat key — so a one-to-one
+    conversation was labelled with a phone number for exactly as long as your
+    own message was the newest, and flipped back when they replied (#17,
+    @znayer). For a DM the conversation IS the person, so resolve that.
+    """
+    if handle:
+        return name_for(handle)
+    return name_for(chat_identifier) if _is_dm_id(chat_identifier) else None
 
 
 def name_for(handle: str | None) -> str | None:
@@ -68,12 +146,13 @@ def name_for(handle: str | None) -> str | None:
         return None
     if _NAME_INDEX is None:
         # One person usually exists in SEVERAL sources (iCloud, Exchange, On My
-        # Mac) under slightly different spellings ("Rob" vs "Robert"). That is
+        # Mac) under slightly different spellings; a Family Sharing child's
+        # mirrored address book is NOT one of yours (_ab_sources drops it) ("Rob" vs "Robert"). That is
         # not ambiguity. Ambiguity is two DIFFERENT records inside ONE source
         # sharing the key — that source is skipped for that key. Across
         # sources the most common spelling wins; ties go to the first source.
         votes: dict[str, dict[str, int]] = {}   # key -> name -> count
-        for path in sorted(glob(_AB_GLOB)):
+        for path in _ab_sources():
             try:
                 con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
                 con.row_factory = sqlite3.Row
@@ -164,13 +243,13 @@ def open_db() -> sqlite3.Connection:
         sys.exit(f"chat.db not found at {DB_PATH}")
     # mode=ro alone (without immutable=1) so we still see uncommitted WAL writes
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-    # macOS 12 and earlier have no Recently Deleted table: read the plain message
-    # table instead of dying with a traceback on every command.
+    # macOS 12 and earlier have no Recently Deleted table: filter without it
+    # instead of dying with a traceback on every command.
     global MESSAGE_SRC
-    if "chat_recoverable_message_join" in MESSAGE_SRC and not con.execute(
+    if not con.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_recoverable_message_join'"
     ).fetchone():
-        MESSAGE_SRC = "message"
+        MESSAGE_SRC = message_src(has_recently_deleted=False)
     con.row_factory = sqlite3.Row
     return con
 
@@ -539,7 +618,7 @@ def render(rows, as_json: bool, with_names: bool = True, con=None, rich: bool = 
                 "ts": fmt_ts(r["date"]),
                 "from_me": bool(r["is_from_me"]),
                 "handle": r["handle"],
-                "name": name_for(r["handle"]) if with_names else None,
+                "name": _dm_name(r["handle"], r["chat_identifier"]) if with_names else None,
                 "service": r["service"],
                 "chat": r["room_name"] or r["chat_identifier"],
                 "text": message_text(r),
@@ -569,14 +648,29 @@ def render(rows, as_json: bool, with_names: bool = True, con=None, rich: bool = 
         print(f"{fmt_ts(r['date'])}  {who:>30}{chat_tag}: {text}")
 
 
-# Recently Deleted (the 30-day bin, synced from iPhone via Messages in iCloud)
-# keeps its rows in chat.db. Hide them by default, or a conversation deleted on
-# the phone lingers in every client for a month. IMSG_INCLUDE_DELETED=1 shows them.
-MESSAGE_SRC = (
-    "message"
-    if os.environ.get("IMSG_INCLUDE_DELETED") == "1"
-    else "(SELECT * FROM message WHERE ROWID NOT IN (SELECT message_id FROM chat_recoverable_message_join))"
-)
+# Two kinds of rows live in the message table without being messages. Both are
+# hidden at the source, so every query — recent, thread, chats, unread — agrees.
+#
+#   Recently Deleted: the 30-day bin, synced from the iPhone via Messages in
+#   iCloud. Left in, a conversation deleted on the phone lingers in every client
+#   for a month. IMSG_INCLUDE_DELETED=1 shows them.
+#
+#   Announcements (item_type != 0): someone joined or left, a rename, location
+#   sharing started or stopped. Messages.app draws them as grey centered text
+#   and never marks them read, so left in they surface as empty bubbles that
+#   count as unread forever. Group names are still recovered from rename rows;
+#   cmd_groups reads the raw table for that.
+HIDE_DELETED = os.environ.get("IMSG_INCLUDE_DELETED") != "1"
+
+
+def message_src(has_recently_deleted: bool) -> str:
+    where = ["item_type = 0"]
+    if HIDE_DELETED and has_recently_deleted:
+        where.append("ROWID NOT IN (SELECT message_id FROM chat_recoverable_message_join)")
+    return f"(SELECT * FROM message WHERE {' AND '.join(where)})"
+
+
+MESSAGE_SRC = message_src(has_recently_deleted=True)
 
 _BASE_SELECT_CACHE: str | None = None
 
@@ -660,15 +754,33 @@ def cmd_thread(con, args):
            with_names=not args.no_names, con=con, rich=args.rich)
 
 
+def _search_needles(query: str) -> list[str]:
+    """Case variants to scan inside attributedBody.
+    instr() on a BLOB is byte-exact; LIKE on m.text is already ASCII
+    case-insensitive. Newer messages often have NULL text and only a
+    UTF-8 needle inside the typedstream, so a lowercase query would miss
+    a body that starts with a capital letter."""
+    q = query or ""
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in (q, q.lower(), q.upper(), q[:1].upper() + q[1:].lower() if q else ""):
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
 def cmd_search(con, args):
     # text column is null for newer messages; also scan attributedBody as bytes
+    needles = _search_needles(args.query)
+    blob_or = " OR ".join("instr(m.attributedBody, CAST(? AS BLOB)) > 0" for _ in needles)
     rows = con.execute(
         base_select(con)
-        + """
+        + f"""
         WHERE m.text LIKE ?
-           OR (m.attributedBody IS NOT NULL AND instr(m.attributedBody, CAST(? AS BLOB)) > 0)
+           OR (m.attributedBody IS NOT NULL AND ({blob_or}))
         ORDER BY m.date DESC LIMIT ?""",
-        (f"%{args.query}%", args.query, args.n),
+        (f"%{args.query}%", *needles, args.n),
     ).fetchall()
     render(reversed(rows) if args.chrono else rows, args.json,
            with_names=not args.no_names, con=con, rich=args.rich)
@@ -839,7 +951,8 @@ def cmd_chats(con, args):
                 "last_text": message_text(last) if last else "",
                 "last_from_me": bool(last["is_from_me"]) if last else False,
                 "last_handle": (last["handle"] if last else None) or "",
-                "last_name": (name_for(last["handle"]) if last and last["handle"] and not args.no_names else None),
+                "last_name": (None if args.no_names
+                              else _dm_name(last["handle"] if last else None, r["chat_identifier"])),
                 "last_attachment": attachments.get(last["mid"]) if last else None,
                 "pinned": pin_order is not None,
                 "pin_order": pin_order,
@@ -1094,10 +1207,32 @@ def _stream_group_photo(con, chat_identifier: str) -> None:
     sys.stdout.buffer.flush()
 
 
+# JPEG, PNG, GIF. Qt renders all three, and all three turn up in AddressBook.
+_IMAGE_MAGIC = (b"\xff\xd8", b"\x89PNG", b"GIF8")
+_AVATAR_MAX = 2 * 1024 * 1024
+
+
+def _unwrap_image(data: bytes) -> bytes:
+    """Image bytes from an AddressBook blob, or b"" if it is not an image.
+
+    Core Data tags an inline binary attribute with ONE leading byte, and on
+    every Mac we have looked at that byte is 0x01 — `01FFD8FF…`, `0189504E…`,
+    `01474946…`. The old check demanded that the blob START with the magic, so
+    every inline photo was thrown away and only external-storage records (the
+    0x02 form, handled below) ever produced a picture. Reported by @dreinecke
+    in #16, where NONE resolved; on the maintainer's Mac 333 of 346 thumbnails
+    were being discarded, which is why it looked like it worked.
+    """
+    if data[:1] == b"\x01" and data[1:5].startswith(_IMAGE_MAGIC):
+        data = data[1:]
+    return data if data.startswith(_IMAGE_MAGIC) else b""
+
+
 def _avatar_bytes(db_path: str, pk: int) -> bytes:
     """Photo bytes for one AddressBook record, or b"". Tries the thumbnail,
-    then the full image. Either column may hold the bytes inline OR a Core
-    Data external-storage reference (\x02<UUID>\x00) naming a file under
+    then the full image. Either column may hold the bytes inline (optionally
+    behind a 0x01 Core Data tag byte) OR an external-storage reference
+    (\x02<UUID>\x00) naming a file under
     <Source>/.AddressBook-v22_SUPPORT/_EXTERNAL_DATA/."""
     try:
         con2 = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -1112,7 +1247,10 @@ def _avatar_bytes(db_path: str, pk: int) -> bytes:
         data = bytes(col) if col is not None else b""
         if not data:
             continue
-        if not data.startswith((b"\xff\xd8", b"\x89PNG")):
+        unwrapped = _unwrap_image(data)
+        if unwrapped:
+            data = unwrapped
+        else:
             mref = re.search(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",
                              data.decode("latin-1"))
             if not mref:
@@ -1122,10 +1260,10 @@ def _avatar_bytes(db_path: str, pk: int) -> bytes:
                 continue
             try:
                 with open(fp, "rb") as f:
-                    data = f.read(2 * 1024 * 1024 + 1)
+                    data = _unwrap_image(f.read(_AVATAR_MAX + 1))
             except OSError:
                 continue
-        if data.startswith((b"\xff\xd8", b"\x89PNG")) and len(data) <= 2 * 1024 * 1024:
+        if data and len(data) <= _AVATAR_MAX:
             return data
     return b""
 
@@ -1147,7 +1285,7 @@ def cmd_avatar(con, args):
     if not key:
         sys.exit(1)
     candidates: list[tuple[str, int]] = []
-    for path in glob(_AB_GLOB):
+    for path in _ab_sources():
         try:
             con2 = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             q = ("SELECT ZOWNER AS pk, ZADDRESS AS v FROM ZABCDEMAILADDRESS" if want_email
@@ -1185,7 +1323,11 @@ def cmd_attachment(con, args):
     - hard 100 MB ceiling, checked on the fstat'd size and again while
       streaming in case the file grows.
     --jpeg converts image/* (HEIC in practice) through sips first so the
-    Linux side never needs an HEIC decoder.
+    Linux side never needs an HEIC decoder. --max-dim N additionally resamples
+    to N pixels on the long edge: an inline preview is drawn at ~800 px, and a
+    full-resolution iPhone HEIC becomes a JPEG roughly HALF AGAIN AS BIG as the
+    source (5.07 MB HEIC → 7.80 MB JPEG, measured), which is how photos ended
+    up too large to auto-load. Clicking one still fetches it whole.
     """
     if not re.fullmatch(r"[0-9]{1,18}", args.id):
         sys.exit("error: attachment id must be decimal digits")
@@ -1226,11 +1368,13 @@ def cmd_attachment(con, args):
 
         fd_t, tmp = tempfile.mkstemp(suffix=".jpg")
         os.close(fd_t)
+        cmd = ["sips", "-s", "format", "jpeg"]
+        if getattr(args, "max_dim", 0):
+            # -Z is "resample, longest edge, preserve aspect"; it never upscales.
+            cmd += ["-Z", str(int(args.max_dim)), "-s", "formatOptions", "80"]
+        cmd += [path, "--out", tmp]
         try:
-            r = subprocess.run(
-                ["sips", "-s", "format", "jpeg", path, "--out", tmp],
-                capture_output=True, timeout=60,
-            )
+            r = subprocess.run(cmd, capture_output=True, timeout=60)
         except subprocess.TimeoutExpired:
             os.unlink(tmp)   # never leave a converted copy in $TMPDIR
             sys.exit("error: sips conversion timed out")
@@ -1481,6 +1625,8 @@ def main() -> None:
     s.add_argument("id")
     s.add_argument("--jpeg", action="store_true",
                    help="convert image/* (HEIC) to JPEG via sips before streaming")
+    s.add_argument("--max-dim", type=int, default=0, dest="max_dim",
+                   help="with --jpeg, resample to N px on the long edge (inline previews)")
     s.set_defaults(func=cmd_attachment)
     s = sub.add_parser("avatar", parents=[common], help="stream a contact photo (JPEG) for a handle, or a group's own photo with --chat")
     s.add_argument("handle", nargs="?", default="")

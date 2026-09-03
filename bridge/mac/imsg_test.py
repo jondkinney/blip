@@ -37,7 +37,8 @@ class ChatProjectionTests(unittest.TestCase):
             CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
             CREATE TABLE message (
               ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT,
-              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER
+              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER,
+              item_type INTEGER DEFAULT 0
             );
             CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
             CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
@@ -49,8 +50,8 @@ class ChatProjectionTests(unittest.TestCase):
             INSERT INTO chat VALUES (1, '+15551234567', NULL, NULL, NULL, 'SMS', NULL, NULL, 45);
             INSERT INTO chat VALUES (2, '+15551234567', NULL, NULL, NULL, 'iMessage', NULL, NULL, 45);
             INSERT INTO handle VALUES (1, '+15551234567');
-            INSERT INTO message VALUES (10, 100, 'old', NULL, 0, 1);
-            INSERT INTO message VALUES (11, 200, 'new', NULL, 0, 1);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (10, 100, 'old', NULL, 0, 1);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (11, 200, 'new', NULL, 0, 1);
             INSERT INTO chat_message_join VALUES (1, 10);
             INSERT INTO chat_message_join VALUES (2, 11);
         """)
@@ -79,7 +80,8 @@ class ChatProjectionTests(unittest.TestCase):
             CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
             CREATE TABLE message (
               ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT,
-              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER
+              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER,
+              item_type INTEGER DEFAULT 0
             );
             CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
             CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
@@ -90,7 +92,7 @@ class ChatProjectionTests(unittest.TestCase):
             CREATE TABLE chat_recoverable_message_join (message_id INTEGER);
             INSERT INTO chat VALUES (1, 'chat999', NULL, NULL, 'chat999', 'iMessage', NULL, NULL, 43);
             INSERT INTO handle VALUES (1, '+15551234567');
-            INSERT INTO message VALUES (10, 100, '￼', NULL, 0, 1);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (10, 100, '￼', NULL, 0, 1);
             INSERT INTO chat_message_join VALUES (1, 10);
             INSERT INTO attachment VALUES (20, 'photo.HEIC', 'image/heic');
             INSERT INTO message_attachment_join VALUES (10, 20);
@@ -122,7 +124,8 @@ class ChatProjectionTests(unittest.TestCase):
             CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
             CREATE TABLE message (
               ROWID INTEGER PRIMARY KEY, date INTEGER, text TEXT,
-              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER
+              attributedBody BLOB, is_from_me INTEGER, handle_id INTEGER,
+              item_type INTEGER DEFAULT 0
             );
             CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
             CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
@@ -137,9 +140,9 @@ class ChatProjectionTests(unittest.TestCase):
             INSERT INTO handle VALUES (1, '+15550000001');
             INSERT INTO handle VALUES (2, '+15550000002');
             INSERT INTO handle VALUES (3, '+15550000003');
-            INSERT INTO message VALUES (10, 100, 'old', NULL, 0, 1);
-            INSERT INTO message VALUES (11, 200, 'new', NULL, 0, 1);
-            INSERT INTO message VALUES (12, 150, 'different people', NULL, 0, 3);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (10, 100, 'old', NULL, 0, 1);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (11, 200, 'new', NULL, 0, 1);
+            INSERT INTO message (ROWID, date, text, attributedBody, is_from_me, handle_id) VALUES (12, 150, 'different people', NULL, 0, 3);
             INSERT INTO chat_message_join VALUES (1, 10);
             INSERT INTO chat_message_join VALUES (2, 11);
             INSERT INTO chat_message_join VALUES (3, 12);
