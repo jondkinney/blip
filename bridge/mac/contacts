@@ -80,7 +80,14 @@ _PERSON_UID = re.compile(r"[A-Za-z0-9._:-]{1,200}\Z")
 
 
 def source_dbs() -> list[str]:
-    """All AddressBook-v22.abcddb files (one per source/account)."""
+    """All AddressBook-v22.abcddb files (one per source/account).
+
+    Ordered by contact count, largest account first, so account numbering and
+    the compare/merge card order stay stable across contacts — the biggest
+    store (usually iCloud) is always card 1 instead of whichever store's
+    folder name happens to sort first. Ties and unreadable stores fall back
+    to path order for determinism.
+    """
     paths = sorted(
         glob(os.path.join(ADDRESSBOOK_DIR, "Sources", "*", "AddressBook-v22.abcddb"))
     )
@@ -88,7 +95,15 @@ def source_dbs() -> list[str]:
     root = os.path.join(ADDRESSBOOK_DIR, "AddressBook-v22.abcddb")
     if os.path.exists(root):
         paths.append(root)
-    return paths
+
+    def record_count(path: str) -> int:
+        try:
+            with open_db(path) as con:
+                return int(con.execute("SELECT COUNT(*) FROM ZABCDRECORD").fetchone()[0])
+        except (sqlite3.Error, OSError, TypeError, ValueError):
+            return -1
+
+    return sorted(paths, key=lambda item: (-record_count(item), item))
 
 
 def open_db(path: str) -> sqlite3.Connection:
@@ -325,11 +340,21 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
     if len(by_name) > MAX_CANDIDATES:
         raise RuntimeError("too many possible names; refine the matching cards in Contacts")
     candidates = []
+    # matching_records walks the stores in source_dbs() order — largest
+    # account first — so first appearance IS the global account order. Rank
+    # sources by it so account numbering and card order stay stable across
+    # every contact instead of following store UUIDs or photo recency.
+    source_rank: dict[str, int] = {}
+    for record in records:
+        source_rank.setdefault(record["source"], len(source_rank))
     for folded, named_records in by_name.items():
         name = display_name[folded]
         source_numbers = {
             source: index + 1
-            for index, source in enumerate(sorted({r["source"] for r in named_records}))
+            for index, source in enumerate(sorted(
+                {r["source"] for r in named_records},
+                key=lambda source: (source_rank.get(source, len(source_rank)), source),
+            ))
         }
         source_names = {
             source: next((clean_text(record.get("sourceName"), MAX_SOURCE_NAME_CHARS)
@@ -340,8 +365,12 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
         }
         ordered_records = sorted(
             named_records,
-            key=lambda r: (-int(r["photo"]), -r["modified"], r["uid"]),
+            key=lambda r: (source_rank.get(r["source"], len(source_rank)),
+                           -int(r["photo"]), -r["modified"], r["uid"]),
         )
+        # cards and the raw record list are consumed positionally together
+        # (owned_card, compare) — keep them in the SAME order
+        by_name[folded] = ordered_records
         candidates.append({
             "token": resolve_token(key, name),
             "name": name,
@@ -365,6 +394,29 @@ def contact_candidates(handle: object) -> tuple[str, list[dict], dict[str, list[
     for candidate in candidates:
         del candidate["_modified"]
     return original, candidates, by_name
+
+
+def store_fingerprint() -> str:
+    """Cheap change detector for the whole Contacts dataset: per store, the
+    row count and newest modification stamp. Any add/edit/delete moves it
+    (sync churn may too — a false miss only costs a re-scan). Lets callers
+    reuse cached cleanup-scan results when nothing changed on the Mac."""
+    parts = []
+    for path in bounded_source_dbs():
+        count, newest = -1, -1.0
+        try:
+            with open_db(path) as con:
+                row = con.execute(
+                    "SELECT COUNT(*), COALESCE(MAX(ZMODIFICATIONDATE), 0) FROM ZABCDRECORD"
+                ).fetchone()
+                count, newest = int(row[0]), float(row[1])
+        except (sqlite3.Error, OSError, TypeError, ValueError):
+            pass
+        parts.append([source_identifier(path), count, newest])
+    digest = hashlib.sha256(
+        ("blip-contact-store-v1\0" + json.dumps(parts, sort_keys=True)).encode("utf-8")
+    ).hexdigest()
+    return "sha256:" + digest
 
 
 def audit_contact_handles(value: object) -> dict:
@@ -452,13 +504,58 @@ def selected_candidate(handle: object, token: object) -> tuple[str, str, dict, l
     candidate = next((item for item in candidates if item["token"] == token_text), None)
     if candidate is None:
         raise ValueError("the selected contact is no longer a candidate")
-    records = sorted(
-        by_name[candidate["name"].casefold()],
-        key=lambda record: (-int(record["photo"]), -record["modified"], record["uid"]),
-    )
+    # contact_candidates already ordered these to match candidate["cards"]
+    # (largest account first); re-sorting here would de-align the two lists
+    # that are consumed positionally together.
+    records = list(by_name[candidate["name"].casefold()])
     if len(records) != candidate["recordCount"]:
         raise RuntimeError("Contacts returned inconsistent candidate cards")
     return original, key, candidate, records
+
+
+def selected_candidate_pair(
+    handle: object, token: object, other_token: object,
+) -> tuple[str, str, dict, list[dict]]:
+    """Explicitly combine TWO named candidates into one merge scope.
+
+    A person can appear under two names on one handle (a married-name change
+    is the common case). Cross-name consolidation is available only when the
+    caller presents BOTH owner tokens — nothing is ever guessed — and the
+    combined cards are renumbered over the union so account numbers stay
+    unique. Everything downstream (revisions, plan hash, undo receipt) works
+    on exact card tokens and is name-agnostic.
+    """
+    other_text = clean_text(other_token, 80)
+    if not _CONTACT_TOKEN.fullmatch(other_text):
+        raise ValueError("the other contact token is invalid")
+    original, key, candidate, records = selected_candidate(handle, token)
+    if candidate["token"] == other_text:
+        raise ValueError("the other person must be a different candidate")
+    _, _, other, other_records = selected_candidate(handle, other_text)
+    paired = []
+    for cand, recs in ((candidate, records), (other, other_records)):
+        for index, record in enumerate(recs):
+            paired.append((record, dict(cand["cards"][index])))
+    # The union follows the same global account order as every other view
+    # (largest store first), not selected-person-first; the stable sort keeps
+    # each person's internal card order within a source.
+    rank = {source_identifier(path): position
+            for position, path in enumerate(bounded_source_dbs())}
+    paired.sort(key=lambda item: rank.get(item[0]["source"], len(rank)))
+    combined_sources: dict[str, int] = {}
+    for record, _ in paired:
+        combined_sources.setdefault(record["source"], len(combined_sources) + 1)
+    cards = []
+    ordered_records = []
+    for record, card in paired:
+        card["accountNumber"] = combined_sources[record["source"]]
+        cards.append(card)
+        ordered_records.append(record)
+    combined = dict(candidate)
+    combined["recordCount"] = len(ordered_records)
+    combined["sourceCount"] = len(combined_sources)
+    combined["cards"] = cards
+    return original, key, combined, ordered_records
 
 
 def selected_candidate_from_unique_handle(
@@ -472,10 +569,7 @@ def selected_candidate_from_unique_handle(
         raise ValueError("more than one person matches this handle; use Edit contact to choose one")
     _, key, _ = normalize_resolve_handle(original)
     candidate = candidates[0]
-    records = sorted(
-        by_name[candidate["name"].casefold()],
-        key=lambda record: (-int(record["photo"]), -record["modified"], record["uid"]),
-    )
+    records = list(by_name[candidate["name"].casefold()])
     if len(records) != candidate["recordCount"]:
         raise RuntimeError("Contacts returned inconsistent candidate cards")
     return original, key, candidate, records
@@ -687,6 +781,15 @@ def run_contact_repair(request: dict) -> dict:
     return response
 
 
+class NativeMutationError(RuntimeError):
+    """A contact-delete failure carrying the machine-readable stage, so the
+    caller can pick a recovery path without parsing the human message."""
+
+    def __init__(self, message: str, stage: str = ""):
+        super().__init__(message)
+        self.stage = stage
+
+
 def run_native_contact_mutation(
     request: dict, output_limit: int = MAX_REPAIR_PROCESS_BYTES,
 ) -> dict:
@@ -705,8 +808,10 @@ def run_native_contact_mutation(
         message = clean_text(stderr.decode("utf-8", "replace"), 180)
         raise RuntimeError(message or "Contacts deletion returned invalid data")
     if code != 0 or not isinstance(response, dict) or response.get("ok") is not True:
-        raise RuntimeError(clean_text(response.get("error") if isinstance(response, dict) else "", 180)
-                           or "Contacts deletion failed")
+        message = (clean_text(response.get("error") if isinstance(response, dict) else "", 180)
+                   or "Contacts deletion failed")
+        stage = clean_text(response.get("stage") if isinstance(response, dict) else "", 40)
+        raise NativeMutationError(message, stage)
     return response
 
 
@@ -923,16 +1028,104 @@ def mutation_plan_hash(action: str, value: dict) -> str:
     ).hexdigest()
 
 
+def native_collection_counts(person_uids: list[str]) -> dict[str, tuple[int, int, int, int]]:
+    """Fresh CNContactStore collection sizes per card — the authority the
+    Contacts.app describe view is checked against."""
+    response = run_native_contact_mutation({"operation": "counts", "personUids": person_uids})
+    raw = response.get("counts")
+    if not isinstance(raw, list) or len(raw) != len(person_uids):
+        raise RuntimeError("Contacts returned invalid card counts")
+    result: dict[str, tuple[int, int, int, int]] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise RuntimeError("Contacts returned invalid card counts")
+        uid = clean_text(entry.get("uid"), 200)
+        sizes = tuple(entry.get(key) for key in ("phones", "emails", "urls", "addresses"))
+        if uid == "" or not all(isinstance(size, int) and 0 <= size <= 64 for size in sizes):
+            raise RuntimeError("Contacts returned invalid card counts")
+        result[uid] = sizes  # type: ignore[assignment]
+    return result
+
+
 def describe_records(records: list[dict]) -> list[dict]:
+    """Describe cards via Contacts.app, cross-checked against CNContactStore.
+
+    The app process is long-lived and its person objects go STALE after
+    external store mutations — right after a merge it can report a card's
+    collections as empty while the scalars still read (seen live 2026-09-03;
+    an editor seeded from that view would draft field deletions). Retry the
+    describe until the app's collection sizes agree with the store, and fail
+    honestly if the view never settles.
+    """
     if not 1 <= len(records) <= 8:
         raise ValueError("card details require between one and eight active cards")
-    result = run_contact_repair({
-        "operation": "describe", "personUids": [record["uid"] for record in records],
-    })
-    raw_cards = result.get("cards")
-    if not isinstance(raw_cards, list) or len(raw_cards) != len(records):
-        raise RuntimeError("Contacts returned an invalid card description")
-    return [validated_card_detail(raw) for raw in raw_cards]
+    uids = [record["uid"] for record in records]
+    expected = native_collection_counts(uids)
+    details: list[dict] = []
+    for attempt in range(6):
+        if attempt:
+            time.sleep(0.5)
+        result = run_contact_repair({"operation": "describe", "personUids": uids})
+        raw_cards = result.get("cards")
+        if not isinstance(raw_cards, list) or len(raw_cards) != len(records):
+            raise RuntimeError("Contacts returned an invalid card description")
+        details = [validated_card_detail(raw) for raw in raw_cards]
+        if all(
+            (len(detail["phones"]), len(detail["emails"]),
+             len(detail["urls"]), len(detail["addresses"])) == expected.get(uid)
+            for uid, detail in zip(uids, details)
+        ):
+            return details
+    raise RuntimeError(
+        "Contacts.app is showing stale card data; give it a moment and try again")
+
+
+def same_card_content(left: dict, right: dict) -> bool:
+    """Field-for-field draft equality that ignores collection ORDER.
+
+    The native writer reuses a card's existing rows and appends additions, so
+    a merged card legitimately reads back with the same values in a different
+    sequence than the reviewed draft listed them (seen live 2026-09-03: a
+    two-email merge applied perfectly and still failed the byte-identical
+    check). The reviewed plan's contract is the content, not the sequence.
+    """
+    def canonical(detail: dict) -> dict:
+        result = {key: value for key, value in detail.items() if key != "displayName"}
+        for key in ("phones", "emails", "urls", "addresses"):
+            result[key] = sorted(
+                detail.get(key) or [],
+                key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False),
+            )
+        return result
+    return canonical(left) == canonical(right)
+
+
+def settled_card_detail(uid: str, draft: dict) -> dict:
+    """Read a just-saved card back, tolerating Contacts.app's stale view.
+
+    Saves go through CNContactStore, but describe goes through Contacts.app,
+    whose in-memory people refresh asynchronously — an immediate read-back can
+    still show the pre-save card (verified live: a merged card that "failed"
+    verification matched the draft exactly one poll later). Poll briefly for
+    the saved draft; return the last view so the caller's equality check still
+    decides.
+    """
+    detail = None
+    last_error: Exception | None = None
+    for attempt in range(10):
+        if attempt:
+            time.sleep(0.6)
+        try:
+            detail = validated_card_detail(describe_records([{"uid": uid}])[0])
+        except (RuntimeError, ValueError) as error:
+            last_error = error
+            continue
+        if same_card_content(card_draft(detail), draft):
+            return detail
+    if detail is None:
+        raise last_error if last_error is not None else RuntimeError(
+            "Contacts returned no card details")
+    return detail
 
 
 def owned_card(
@@ -983,8 +1176,13 @@ def mutation_metadata(
     }
 
 
-def compare_candidate(handle: object, owner_token: object) -> dict:
-    original, key, candidate, records = selected_candidate(handle, owner_token)
+def compare_candidate(handle: object, owner_token: object,
+                      other_owner_token: object = None) -> dict:
+    if other_owner_token:
+        original, key, candidate, records = selected_candidate_pair(
+            handle, owner_token, other_owner_token)
+    else:
+        original, key, candidate, records = selected_candidate(handle, owner_token)
     if not 1 <= len(records) <= 8:
         raise ValueError("contact management requires between one and eight active cards")
     details = describe_records(records)
@@ -1050,7 +1248,7 @@ def apply_card_edit(
     undo_token = write_undo_receipt({"action": "edit", **private})
     if native_update:
         run_contact_update(private["personUid"], private["after"])
-        after = validated_card_detail(describe_records([{"uid": private["personUid"]}])[0])
+        after = settled_card_detail(private["personUid"], private["after"])
     else:
         result = run_contact_repair({
             "operation": "edit", "personUid": private["personUid"],
@@ -1059,7 +1257,7 @@ def apply_card_edit(
         if result.get("edited") is not True:
             raise RuntimeError("Contacts did not confirm the card edit")
         after = validated_card_detail(result.get("card"))
-    if card_draft(after) != private["after"]:
+    if not same_card_content(card_draft(after), private["after"]):
         raise RuntimeError("Contacts changed the contact card while saving it")
     return {
         **preview, "applied": True, "undoToken": undo_token,
@@ -1108,9 +1306,13 @@ def apply_card_delete(
 
 def prepare_consolidation(
     handle: object, owner_token: object, target_token: object,
-    revisions_value: object, draft_value: object,
+    revisions_value: object, draft_value: object, other_owner_token: object = None,
 ) -> tuple[dict, dict]:
-    original, key, candidate, records = selected_candidate(handle, owner_token)
+    if other_owner_token:
+        original, key, candidate, records = selected_candidate_pair(
+            handle, owner_token, other_owner_token)
+    else:
+        original, key, candidate, records = selected_candidate(handle, owner_token)
     if not 2 <= len(records) <= 8:
         raise ValueError("consolidation requires between two and eight active cards")
     if not isinstance(revisions_value, list) or len(revisions_value) != len(records):
@@ -1163,13 +1365,50 @@ def prepare_consolidation(
     return preview, private
 
 
+def recover_consolidation_via_contacts_app(private: dict, error: NativeMutationError) -> None:
+    """Finish an approved consolidation through Contacts.app when the native
+    store path faults.
+
+    CNContactStore fails with Cocoa 134092 ("Unhandled error occurred during
+    faulting") on cards holding a damaged stored row — persistently, for any
+    real write — while Contacts.app's own write path still succeeds (verified
+    live 2026-09-03 on two real synced cards). The plan being recovered is the
+    exact reviewed one: the survivor draft is revalidated against the card's
+    current state, and only the already-confirmed source uids are removed.
+    """
+    if error.stage not in ("update contact", "update survivor",
+                           "save same-account merge", "delete sources"):
+        raise error
+    if error.stage != "delete sources":
+        current = validated_card_detail(
+            describe_records([{"uid": private["targetUid"]}])[0])
+        if card_draft(current) != private["targetAfter"]:
+            edited = run_contact_repair({
+                "operation": "edit", "personUid": private["targetUid"],
+                "expectedCard": current, "card": private["targetAfter"],
+            })
+            if edited.get("edited") is not True:
+                raise error
+    remaining = [source["personUid"] for source in private["sources"]]
+    try:
+        run_contact_delete(remaining)
+        return
+    except RuntimeError:
+        pass
+    removed = run_contact_repair({
+        "operation": "delete-fallback", "personUids": remaining,
+    })
+    if removed.get("deletedCount") != len(remaining):
+        raise error
+
+
 def apply_consolidation(
     handle: object, owner_token: object, target_token: object, revisions: object,
-    draft: object, expected_plan: object,
+    draft: object, expected_plan: object, other_owner_token: object = None,
 ) -> dict:
     require_write_gate()
     preview, private = prepare_consolidation(
-        handle, owner_token, target_token, revisions, draft,
+        handle, owner_token, target_token, revisions, draft, other_owner_token,
     )
     if preview["planHash"] != require_plan_hash(expected_plan):
         raise ValueError("the merge plan changed; preview it again")
@@ -1192,15 +1431,16 @@ def apply_consolidation(
     # The native helper saves and verifies the survivor before deleting source
     # cards. For cross-account merges it issues one deletion request per source
     # container, avoiding the CNSaveRequest cross-store failure.
-    run_contact_consolidation(
-        private["targetUid"],
-        [source["personUid"] for source in private["sources"]],
-        private["targetAfter"],
-    )
-    updated_card = validated_card_detail(
-        describe_records([{"uid": private["targetUid"]}])[0]
-    )
-    if card_draft(updated_card) != private["targetAfter"]:
+    try:
+        run_contact_consolidation(
+            private["targetUid"],
+            [source["personUid"] for source in private["sources"]],
+            private["targetAfter"],
+        )
+    except NativeMutationError as error:
+        recover_consolidation_via_contacts_app(private, error)
+    updated_card = settled_card_detail(private["targetUid"], private["targetAfter"])
+    if not same_card_content(card_draft(updated_card), private["targetAfter"]):
         raise RuntimeError("Contacts changed the merged card while saving it")
     after = updated_card
     return {
@@ -1462,8 +1702,15 @@ def _cmd_resolve(args):
             "candidates": candidates,
         })
         return
+    if operation == "fingerprint":
+        emit_resolve({"ok": True, "fingerprint": store_fingerprint()})
+        return
     if operation == "audit":
-        emit_resolve({"ok": True, **audit_contact_handles(request.get("handles"))})
+        # fingerprint taken BEFORE the scan: a change landing mid-scan makes
+        # the next freshness check miss, which is the safe direction
+        fingerprint = store_fingerprint()
+        emit_resolve({"ok": True, "fingerprint": fingerprint,
+                      **audit_contact_handles(request.get("handles"))})
         return
     if operation == "open":
         _, _, selected, selected_record, selected_card_number, selected_account_number = selected_card(
@@ -1487,7 +1734,8 @@ def _cmd_resolve(args):
         })
         return
     if operation == "compare":
-        result = compare_candidate(request.get("handle"), request.get("ownerToken"))
+        result = compare_candidate(request.get("handle"), request.get("ownerToken"),
+                                   request.get("otherOwnerToken"))
         emit_resolve({"ok": True, **result})
         return
     if operation == "edit-prepare":
@@ -1521,7 +1769,7 @@ def _cmd_resolve(args):
     if operation == "merge-prepare":
         preview, _ = prepare_consolidation(
             request.get("handle"), request.get("ownerToken"), request.get("targetToken"),
-            request.get("revisions"), request.get("card"),
+            request.get("revisions"), request.get("card"), request.get("otherOwnerToken"),
         )
         emit_resolve({"ok": True, "preview": preview})
         return
@@ -1529,6 +1777,7 @@ def _cmd_resolve(args):
         result = apply_consolidation(
             request.get("handle"), request.get("ownerToken"), request.get("targetToken"),
             request.get("revisions"), request.get("card"), request.get("planHash"),
+            request.get("otherOwnerToken"),
         )
         emit_resolve({"ok": True, **result})
         return

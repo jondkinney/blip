@@ -35,16 +35,44 @@ class ContactResolverTests(unittest.TestCase):
             script_source = stream.read()
         with open(native_helper, "r", encoding="utf-8") as stream:
             native_source = stream.read()
-        self.assertNotIn("Contacts.delete(", script_source)
         self.assertNotIn("removeRecord(", script_source)
+        # Contacts.delete() covers the person delete-fallback AND field
+        # removal — the remove-from-person Apple event is broken on current
+        # macOS ("Message not understood"), deleting the specifier works.
+        self.assertNotIn("contacts.remove(", script_source)
+        self.assertNotIn("Contacts.remove(", script_source)
+        self.assertGreaterEqual(script_source.count("delete("), 3)
+        self.assertIn('request.operation === "delete-fallback"', script_source)
+        self.assertIn('value.operation === "delete-fallback"', script_source)
+        # the add-to-person Apple event errors with "No error. (0)" on current
+        # macOS; the push pattern is the one that works
+        self.assertIn('person[kind === "email" ? "emails" : "phones"].push(entry)', script_source)
+        # add-only edits keep existing entries (and their damaged rows) untouched
+        self.assertIn("function addedEntries", script_source)
         self.assertIn("CNSaveRequest()", native_source)
         self.assertIn("save.delete(mutable)", native_source)
         self.assertIn("request.unifyResults = false", native_source)
         self.assertIn("grouped[container, default: []]", native_source)
-        self.assertIn("let deletionStore = CNContactStore()", native_source)
-        self.assertIn("let freshSources = try sourceUids.map", native_source)
-        self.assertIn("try deletionStore.execute(deletion)", native_source)
+        # every save stage retries transient Cocoa 134092 against a FRESH
+        # store session, refetching by pinned identifier each attempt
+        self.assertIn("func withFreshStoreRetry", native_source)
+        self.assertIn("try body(CNContactStore())", native_source)
+        self.assertIn("nsError.code == 134092", native_source)
+        self.assertIn('withFreshStoreRetry("update survivor")', native_source)
+        self.assertIn('withFreshStoreRetry("delete sources")', native_source)
+        self.assertIn('withFreshStoreRetry("save same-account merge")', native_source)
         self.assertIn("Contacts saved the merged contact but could not delete", native_source)
+        # unchanged label+value rows are REUSED, never rebuilt: replacing a value
+        # forces contactsd to fault the old row out, and one damaged stored row
+        # then fails the whole save with Cocoa 134092. Contacts.app's scripting
+        # layer also reports unlabeled values under default kind names, which
+        # must normalize back to nil instead of becoming literal custom labels.
+        self.assertIn("func reuseLabeled", native_source)
+        self.assertIn("func normalizedLabel", native_source)
+        self.assertIn('kindDefaults: ["Email"]', native_source)
+        self.assertIn('kindDefaults: ["Phone"]', native_source)
+        # residual failures name their stage and code so reports are diagnosable
+        self.assertIn("(stage: \\(stage), code \\(nsError.code))", native_source)
 
     def test_native_deletion_uses_fixed_argv_and_private_stdin(self):
         completed = (0, b'{"deletedCount":2,"ok":true}', b"")
@@ -348,6 +376,9 @@ class ContactResolverTests(unittest.TestCase):
             return_value=("+15550100001", key, candidate, records),
         ), mock.patch.object(
             contacts, "run_contact_repair", return_value={"ok": True, "cards": [detail, detail]},
+        ), mock.patch.object(
+            contacts, "native_collection_counts",
+            side_effect=lambda uids: {uid: (1, 0, 0, 0) for uid in uids},
         ), mock.patch.object(contacts, "write_gate_enabled", return_value=True):
             result = contacts.compare_candidate("+15550100001", candidate["token"])
         self.assertEqual(result["cardCount"], 2)
@@ -708,6 +739,241 @@ class ContactResolverTests(unittest.TestCase):
                     [], draft, plan,
                 )
         delete.assert_not_called()
+
+
+
+class CrossNameMergeTests(unittest.TestCase):
+    def fake_candidates(self):
+        gray = {"token": "sha256:" + "a" * 64, "name": "Julia Gray", "recordCount": 1,
+                "sourceCount": 1, "hasPhoto": True,
+                "cards": [{"token": "sha256:" + "1" * 64, "accountNumber": 1,
+                           "sourceName": "iCloud", "hasPhoto": True, "matchCount": 1}]}
+        kinney = {"token": "sha256:" + "b" * 64, "name": "Julia Kinney", "recordCount": 1,
+                  "sourceCount": 1, "hasPhoto": True,
+                  "cards": [{"token": "sha256:" + "2" * 64, "accountNumber": 1,
+                             "sourceName": "Gmail", "hasPhoto": True, "matchCount": 1}]}
+        by_name = {
+            "julia gray": [{"uid": "uid-gray", "source": "s-icloud", "photo": True,
+                            "modified": 2, "name": "Julia Gray"}],
+            "julia kinney": [{"uid": "uid-kinney", "source": "s-gmail", "photo": True,
+                              "modified": 1, "name": "Julia Kinney"}],
+        }
+        return ("+15550100001", [gray, kinney], by_name)
+
+    def test_pair_combines_both_people_in_global_account_order(self):
+        # the union follows the same largest-store-first account order as
+        # every other view — NOT selected-person-first
+        stores = ["/AB/Sources/s-gmail/AddressBook-v22.abcddb",
+                  "/AB/Sources/s-icloud/AddressBook-v22.abcddb"]
+        with mock.patch.object(contacts, "contact_candidates", return_value=self.fake_candidates()), \
+             mock.patch.object(contacts, "bounded_source_dbs", return_value=stores), \
+             mock.patch.object(contacts, "normalize_resolve_handle",
+                               return_value=("+15550100001", "5550100001", False)):
+            _, _, combined, records = contacts.selected_candidate_pair(
+                "+15550100001", "sha256:" + "a" * 64, "sha256:" + "b" * 64)
+        self.assertEqual(combined["recordCount"], 2)
+        self.assertEqual(combined["sourceCount"], 2)
+        # gmail (the bigger store) leads even though iCloud's person was selected
+        self.assertEqual([r["uid"] for r in records], ["uid-kinney", "uid-gray"])
+        self.assertEqual([c["sourceName"] for c in combined["cards"]], ["Gmail", "iCloud"])
+        self.assertEqual([c["accountNumber"] for c in combined["cards"]], [1, 2])
+
+    def test_pair_requires_two_distinct_candidates(self):
+        with mock.patch.object(contacts, "contact_candidates", return_value=self.fake_candidates()), \
+             mock.patch.object(contacts, "normalize_resolve_handle",
+                               return_value=("+15550100001", "5550100001", False)):
+            with self.assertRaises(ValueError):
+                contacts.selected_candidate_pair(
+                    "+15550100001", "sha256:" + "a" * 64, "sha256:" + "a" * 64)
+
+
+class SourceOrderTests(unittest.TestCase):
+    def test_sources_order_largest_account_first(self):
+        # the biggest store is always card 1, so compare/merge order is stable
+        counts = {
+            "/AB/Sources/aaa/AddressBook-v22.abcddb": 5,
+            "/AB/Sources/bbb/AddressBook-v22.abcddb": 500,
+            "/AB/Sources/ccc/AddressBook-v22.abcddb": 500,
+        }
+        def fake_open(path):
+            connection = mock.MagicMock()
+            connection.__enter__.return_value = connection
+            connection.__exit__.return_value = False
+            connection.execute.return_value.fetchone.return_value = (counts[path],)
+            return connection
+        with mock.patch.object(contacts, "glob", return_value=sorted(counts)), mock.patch.object(
+            contacts.os.path, "exists", return_value=False,
+        ), mock.patch.object(contacts, "open_db", side_effect=fake_open):
+            ordered = contacts.source_dbs()
+        self.assertEqual(ordered, [
+            "/AB/Sources/bbb/AddressBook-v22.abcddb",
+            "/AB/Sources/ccc/AddressBook-v22.abcddb",
+            "/AB/Sources/aaa/AddressBook-v22.abcddb",
+        ])
+
+
+class CardContentComparisonTests(unittest.TestCase):
+    DETAIL = {
+        "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+        "lastName": "Rivera", "nickname": "", "organization": "Example",
+        "department": "", "jobTitle": "", "birthday": "--09-02", "note": "",
+        "phones": [{"label": "mobile", "value": "+1 555 010 0001"}],
+        "emails": [{"label": "Email", "value": "a@example.invalid"},
+                   {"label": "Email", "value": "b@example.invalid"}],
+        "urls": [], "addresses": [],
+    }
+
+    def test_collection_order_never_fails_verification(self):
+        # the writer reuses existing rows and appends additions, so a merged
+        # card can read back with the same values in a different sequence
+        draft = contacts.card_draft(self.DETAIL)
+        reordered = dict(draft, emails=list(reversed(draft["emails"])))
+        self.assertTrue(contacts.same_card_content(reordered, draft))
+
+    def test_changed_values_still_fail_verification(self):
+        draft = contacts.card_draft(self.DETAIL)
+        changed = dict(draft, emails=[{"label": "Email", "value": "c@example.invalid"},
+                                      {"label": "Email", "value": "b@example.invalid"}])
+        self.assertFalse(contacts.same_card_content(changed, draft))
+        renamed = dict(draft, organization="Someone Else")
+        self.assertFalse(contacts.same_card_content(renamed, draft))
+
+
+class ConsolidationRecoveryTests(unittest.TestCase):
+    DETAIL = {
+        "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+        "lastName": "Rivera", "nickname": "", "organization": "Example",
+        "department": "", "jobTitle": "", "birthday": "--09-02", "note": "",
+        "phones": [{"label": "mobile", "value": "+1 555 010 0001"}],
+        "emails": [], "urls": [], "addresses": [],
+    }
+
+    def private(self):
+        after = dict(contacts.card_draft(self.DETAIL), organization="Merged Org")
+        return {
+            "targetUid": "uid-target", "targetAfter": after,
+            "sources": [{"personUid": "uid-source"}],
+        }
+
+    def test_native_failures_carry_their_stage(self):
+        completed = (1, b'{"ok":false,"error":"boom","stage":"update survivor"}', b"")
+        file_info = os.stat_result((stat.S_IFREG | 0o700, 0, 0, 1, os.getuid(), 0, 1, 0, 0, 0))
+        with mock.patch.object(contacts.os, "lstat", return_value=file_info), mock.patch.object(
+            contacts, "run_bounded_process", return_value=completed,
+        ):
+            with self.assertRaises(contacts.NativeMutationError) as caught:
+                contacts.run_native_contact_mutation({"operation": "consolidate"})
+        self.assertEqual(caught.exception.stage, "update survivor")
+
+    def test_survivor_fault_recovers_through_contacts_app_edit(self):
+        private = self.private()
+        error = contacts.NativeMutationError("boom", "update survivor")
+        with mock.patch.object(
+            contacts, "describe_records", return_value=[self.DETAIL],
+        ), mock.patch.object(
+            contacts, "run_contact_repair", return_value={"ok": True, "edited": True},
+        ) as repair, mock.patch.object(contacts, "run_contact_delete") as delete:
+            contacts.recover_consolidation_via_contacts_app(private, error)
+        self.assertEqual(repair.call_args.args[0]["operation"], "edit")
+        self.assertEqual(repair.call_args.args[0]["card"], private["targetAfter"])
+        delete.assert_called_once_with(["uid-source"])
+
+    def test_delete_fault_falls_back_to_contacts_app_deletion(self):
+        private = self.private()
+        error = contacts.NativeMutationError("boom", "delete sources")
+        with mock.patch.object(
+            contacts, "run_contact_delete", side_effect=RuntimeError("still faulting"),
+        ), mock.patch.object(
+            contacts, "run_contact_repair",
+            return_value={"ok": True, "deletedCount": 1},
+        ) as repair:
+            contacts.recover_consolidation_via_contacts_app(private, error)
+        self.assertEqual(repair.call_args.args[0]["operation"], "delete-fallback")
+        self.assertEqual(repair.call_args.args[0]["personUids"], ["uid-source"])
+
+    def test_unknown_stage_is_never_recovered(self):
+        error = contacts.NativeMutationError("boom", "")
+        with self.assertRaises(contacts.NativeMutationError):
+            contacts.recover_consolidation_via_contacts_app(self.private(), error)
+
+
+class StaleDescribeGuardTests(unittest.TestCase):
+    DETAIL = {
+        "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+        "lastName": "Rivera", "nickname": "", "organization": "", "department": "",
+        "jobTitle": "", "birthday": "", "note": "",
+        "phones": [{"label": "mobile", "value": "+1 555 010 0001"}],
+        "emails": [], "urls": [], "addresses": [],
+    }
+
+    def test_stale_app_view_retries_until_counts_agree(self):
+        # first describe returns a stale empty-collection view; the retry sees
+        # the real card
+        stale = dict(self.DETAIL, phones=[])
+        with mock.patch.object(
+            contacts, "native_collection_counts", return_value={"uid-1": (1, 0, 0, 0)},
+        ), mock.patch.object(
+            contacts, "run_contact_repair",
+            side_effect=[{"ok": True, "cards": [stale]}, {"ok": True, "cards": [self.DETAIL]}],
+        ) as described, mock.patch.object(contacts.time, "sleep"):
+            details = contacts.describe_records([{"uid": "uid-1"}])
+        self.assertEqual(len(details[0]["phones"]), 1)
+        self.assertEqual(described.call_count, 2)
+
+    def test_persistently_stale_view_fails_honestly(self):
+        stale = dict(self.DETAIL, phones=[])
+        with mock.patch.object(
+            contacts, "native_collection_counts", return_value={"uid-1": (1, 0, 0, 0)},
+        ), mock.patch.object(
+            contacts, "run_contact_repair", return_value={"ok": True, "cards": [stale]},
+        ), mock.patch.object(contacts.time, "sleep"):
+            with self.assertRaises(RuntimeError) as caught:
+                contacts.describe_records([{"uid": "uid-1"}])
+        self.assertIn("stale card data", str(caught.exception))
+
+
+class SettledReadbackTests(unittest.TestCase):
+    DETAIL = {
+        "displayName": "Alex Rivera", "firstName": "Alex", "middleName": "",
+        "lastName": "Rivera", "nickname": "", "organization": "Example",
+        "department": "", "jobTitle": "", "birthday": "--09-02", "note": "",
+        "phones": [{"label": "mobile", "value": "+1 555 010 0001"}],
+        "emails": [], "urls": [], "addresses": [],
+    }
+
+    def test_readback_polls_past_contacts_stale_view(self):
+        # Saves go through CNContactStore; describe goes through Contacts.app,
+        # whose view refreshes asynchronously. The first read returns the
+        # pre-save card, the second the saved one — no error, no false
+        # "Contacts changed the card" report.
+        stale = dict(self.DETAIL, organization="Old Org")
+        draft = contacts.card_draft(self.DETAIL)
+        with mock.patch.object(
+            contacts, "describe_records", side_effect=[[stale], [self.DETAIL]],
+        ) as described, mock.patch.object(contacts.time, "sleep") as slept:
+            result = contacts.settled_card_detail("uid-one", draft)
+        self.assertEqual(contacts.card_draft(result), draft)
+        self.assertEqual(described.call_count, 2)
+        slept.assert_called_once()
+
+    def test_readback_returns_last_view_when_the_card_really_changed(self):
+        changed = dict(self.DETAIL, organization="Someone Else Edited")
+        draft = contacts.card_draft(self.DETAIL)
+        with mock.patch.object(
+            contacts, "describe_records", return_value=[changed],
+        ) as described, mock.patch.object(contacts.time, "sleep"):
+            result = contacts.settled_card_detail("uid-one", draft)
+        self.assertNotEqual(contacts.card_draft(result), draft)
+        self.assertEqual(described.call_count, 10)
+
+    def test_readback_tolerates_transient_describe_failures(self):
+        draft = contacts.card_draft(self.DETAIL)
+        with mock.patch.object(
+            contacts, "describe_records",
+            side_effect=[RuntimeError("app view lagging"), [self.DETAIL]],
+        ), mock.patch.object(contacts.time, "sleep"):
+            result = contacts.settled_card_detail("uid-one", draft)
+        self.assertEqual(contacts.card_draft(result), draft)
 
 
 if __name__ == "__main__":
