@@ -344,3 +344,12 @@ to whatever has focus otherwise.
 - **Attachments out.** `send POSIX file` works on Sequoia IF the file is staged
   in `~/Pictures/` — from anywhere else Messages fails silently (`error=25`,
   "Not Delivered"). Verified delivered for PNG and PDF. See ROADMAP.md.
+
+## Draft contact management
+
+`ContactWorkspace.qml` hosts `ContactManagement.qml` and the existing card
+compare/editor views. `ContactOperations.qml` talks to `contact-management.ts`
+through bounded stdin. There is no settings surface or saved display-name
+override. Each native mutation retains its preview, exact token/revision
+validation, independent local/Mac write gates, and private Mac undo receipt.
+The small read-only contact review and its cache remain independent.

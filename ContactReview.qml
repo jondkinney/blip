@@ -24,6 +24,7 @@ FocusScope {
   visible: opened
   readonly property string helper: decodeURIComponent(Qt.resolvedUrl("contact-review.ts").toString().replace(/^file:\/\//, ""))
   signal closed()
+  signal manageRequested(string handle)
 
   function close() { opened = false; closed() }
   function textField(value, maximum) { return typeof value === "string" ? value.slice(0, maximum) : "" }
@@ -143,6 +144,12 @@ FocusScope {
       textFormat: Text.PlainText; wrapMode: Text.WordWrap
       color: root.error !== "" ? Color.urgent : root.foreground
       font.family: root.fontFamily; font.pixelSize: root.fontSize
+    }
+    QQC.Button {
+      visible: root.model !== null && root.model.view === "cards"
+      text: "Manage contact…"
+      enabled: !root.busy
+      onClicked: root.manageRequested(root.model.detail)
     }
     PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
     Flickable {
