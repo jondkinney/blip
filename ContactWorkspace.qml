@@ -24,6 +24,7 @@ FocusScope {
   Keys.onEscapePressed: close()
   ContactOperations {
     id: operations
+    objectName: "blipContactOperations"
     onContactsMutated: root.contactsMutated()
   }
   ColumnLayout {

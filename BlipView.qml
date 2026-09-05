@@ -2860,6 +2860,7 @@ FocusScope {
   ContactReview {
     id: contactReview
     objectName: "blipContactReview"
+    visible: opened && !contactWorkspace.opened
     anchors.fill: parent
     threads: root.threads
     foreground: root.foreground
