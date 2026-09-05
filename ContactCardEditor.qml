@@ -4,7 +4,7 @@ import qs.Commons
 import qs.Ui
 
 // Full, local editor for the bounded Contacts fields exposed by the bridge.
-// Saving is always a two-step preview/apply operation in BlipIdentities.
+// Saving is always a two-step preview/apply operation in ContactOperations.
 ColumnLayout {
   id: root
 

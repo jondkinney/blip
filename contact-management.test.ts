@@ -520,3 +520,30 @@ describe("Mac candidate boundary", () => {
   });
 });
 
+
+describe("contact workspace CLI", () => {
+  test("removed name preferences cannot create a local display override", () => {
+    const { root } = fixture();
+    for (const operation of ["choose", "custom", "clear"]) {
+      const result = spawnSync(process.execPath, ["contact-management.ts", operation], {
+        cwd: import.meta.dir,
+        env: { ...process.env, HOME: root },
+        input: JSON.stringify({ handle: "+15551234567", name: "Example", token }),
+        encoding: "utf8", timeout: 1500,
+      });
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout).ok).toBe(false);
+      expect(existsSync(join(root, ".config", "blip", "identities.json"))).toBe(false);
+    }
+  });
+
+  test("oversized streaming input is rejected before a native request", () => {
+    const { root } = fixture();
+    const result = spawnSync(process.execPath, ["contact-management.ts", "edit"], {
+      cwd: import.meta.dir, env: { ...process.env, HOME: root },
+      input: "x".repeat(MAX_IDENTITY_REQUEST_BYTES + 1), encoding: "utf8", timeout: 1500,
+    });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout).error).toContain("too large");
+  });
+});

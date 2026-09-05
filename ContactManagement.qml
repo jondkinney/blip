@@ -89,7 +89,8 @@ ColumnLayout {
           ? root.resolver.candidates.length + " different people are named for this " + root.handleNoun() + " in Contacts. Pick who this conversation belongs to — from there you can merge the cards or remove the " + root.handleNoun() + " from the wrong one."
           : root.selectedCandidate && root.selectedCandidate.recordCount > 1
             ? root.selectedCandidate.recordCount + " source cards found. Compare, edit, consolidate, delete, or link them from Blip."
-            : "One source card found. You can review, edit, or delete it from Blip."
+            : root.selectedCandidate ? "One source card found. You can review, edit, or delete it from Blip."
+              : "Choose a person to review their source cards."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
         color: Qt.darker(root.foreground, 1.35)
