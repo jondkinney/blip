@@ -264,6 +264,12 @@ describe("displayName", () => {
     // `imsg chats` returns name:null, and unknown numbers never resolve.
     expect(displayName([msg({ name: null, chat: "878478" })])).toBe("878478");
   });
+  test("a filtered stranger's SMS shows the number, not the chat suffix", () => {
+    expect(displayName([msg({ name: null, chat: "+18184632606(filtered)", handle: "+18184632606(filtered)" })])).toBe("+18184632606");
+    // isGroupChat() files that shape as not-a-DM, so the list labels it through groupName.
+    expect(isGroupChat("+18184632606(filtered)")).toBe(true);
+    expect(groupName("+18184632606(filtered)", undefined, new Map())).toBe("+18184632606");
+  });
 });
 
 describe("selectToasts", () => {
