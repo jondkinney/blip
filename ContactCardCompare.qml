@@ -279,7 +279,7 @@ ColumnLayout {
     }
   }
 
-  RowLayout {
+  ColumnLayout {
     visible: root.editorCard === null
     Layout.fillWidth: true
     spacing: root.space(10)
@@ -299,7 +299,7 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         text: root.comparison
-          ? root.comparison.cardCount + " source cards · " + root.comparison.sourceCount
+          ? root.comparison.cardCount + (root.comparison.cardCount === 1 ? " card · " : " cards · ") + root.comparison.sourceCount
             + (root.comparison.sourceCount === 1 ? " Contacts source" : " Contacts sources")
           : ""
         textFormat: Text.PlainText
@@ -309,19 +309,20 @@ ColumnLayout {
       }
     }
     SmallButton {
-      label: "Reload cards from Mac"
+      label: "Reload cards"
       enabled: root.resolver && !root.resolver.loading && root.comparison
       onClicked: root.resolver.compareCards(root.comparison.handle, root.comparison.ownerToken)
     }
     SmallButton {
-      label: "Back to contact tasks"
+      visible: root.resolver && root.resolver.candidates.length > 1
+      label: "Choose another person"
       enabled: root.resolver && !root.resolver.loading
       onClicked: root.resolver.cancelComparison()
     }
   }
 
   ActionHeader {
-    visible: root.editorCard === null
+    visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
     Layout.topMargin: root.space(4)
     title: "Compare source cards"
     detail: root.showSharedFields || root.sharedCount === 0
@@ -330,8 +331,8 @@ ColumnLayout {
         + " tucked away so differences stand out."
   }
 
-  RowLayout {
-    visible: root.editorCard === null
+  ColumnLayout {
+    visible: root.editorCard === null && root.comparison && root.comparison.cardCount > 1
     Layout.fillWidth: true
     spacing: root.space(8)
     Text {
@@ -364,7 +365,8 @@ ColumnLayout {
         required property var modelData
         readonly property var displayedRows: root.visibleRows(modelData)
         Layout.fillWidth: true
-        Layout.preferredWidth: root.space(390)
+        Layout.preferredWidth: Math.min(root.width, root.space(390))
+        Layout.minimumWidth: 0
         Layout.alignment: Qt.AlignTop
         implicitHeight: cardContents.implicitHeight + root.space(28)
         radius: root.corner(root.space(12))
@@ -378,12 +380,12 @@ ColumnLayout {
           anchors.margins: root.space(14)
           spacing: root.space(10)
 
-          RowLayout {
+          ColumnLayout {
             Layout.fillWidth: true
             spacing: root.space(8)
             Text {
               Layout.fillWidth: true
-              text: "SOURCE CARD " + cardBox.modelData.cardNumber
+              text: root.comparison && root.comparison.cardCount === 1 ? "CONTACT DETAILS" : "SOURCE CARD " + cardBox.modelData.cardNumber
               textFormat: Text.PlainText
               elide: Text.ElideRight
               color: root.foreground
@@ -394,11 +396,13 @@ ColumnLayout {
             InfoPill { label: cardBox.modelData.sourceName }
           }
 
-          RowLayout {
+          GridLayout {
+            columns: root.width >= root.space(440) ? 2 : 1
             Layout.fillWidth: true
-            spacing: root.space(8)
+            columnSpacing: root.space(8)
             Text {
               Layout.fillWidth: true
+              visible: false
               text: root.missingDetails(cardBox.modelData)
               textFormat: Text.PlainText
               elide: Text.ElideRight
@@ -408,13 +412,13 @@ ColumnLayout {
             }
             SmallButton {
               visible: !root.crossMerge
-              label: "Edit in Blip…"
+              label: "Edit contact…"
               primary: true
               enabled: root.resolver && !root.resolver.loading && root.resolver.contactWrites
               onClicked: root.editCard(cardBox.modelData)
             }
             SmallButton {
-              label: "Open on Mac…"
+              label: "Open on Mac ↗"
               enabled: root.resolver && !root.resolver.loading
               onClicked: root.resolver.openOnMac(root.comparison.handle, cardBox.modelData.token)
             }
@@ -549,7 +553,7 @@ ColumnLayout {
       anchors.fill: parent
       anchors.margins: root.space(12)
       spacing: root.space(8)
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         spacing: root.space(8)
         ColumnLayout {
@@ -606,7 +610,7 @@ ColumnLayout {
           }
         }
       }
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         visible: root.comparison && root.comparison.cardCount > 1
         spacing: root.space(8)
@@ -659,7 +663,7 @@ ColumnLayout {
       anchors.margins: root.space(12)
       spacing: root.space(9)
 
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         visible: !root.resolver || root.resolver.linkPreview === null
         spacing: root.space(10)
@@ -711,7 +715,7 @@ ColumnLayout {
         font.family: root.fontFamily
         font.pixelSize: root.fontSize(Style.font.caption)
       }
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.linkPreview !== null
         spacing: root.space(8)
@@ -801,36 +805,15 @@ ColumnLayout {
     }
   }
 
-  component SmallButton: Rectangle {
-    id: button
+  component SmallButton: ContactButton {
     property string label: ""
     property bool danger: false
     property bool primary: false
-    signal clicked()
-    implicitWidth: buttonText.implicitWidth + root.space(16)
-    implicitHeight: buttonText.implicitHeight + root.space(10)
-    radius: root.corner(root.space(7))
-    opacity: enabled ? 1.0 : 0.45
-    color: buttonHover.hovered
-      ? Qt.rgba((danger ? root.urgent : root.accent).r,
-                (danger ? root.urgent : root.accent).g,
-                (danger ? root.urgent : root.accent).b, 0.18)
-      : primary ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
-      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
-    border.width: 1
-    border.color: danger ? root.urgent : primary ? root.accent
-      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
-    Text {
-      id: buttonText
-      anchors.centerIn: parent
-      text: button.label
-      textFormat: Text.PlainText
-      color: button.danger ? root.urgent : root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: root.fontSize(Style.font.caption)
-      font.bold: button.primary
-    }
-    HoverHandler { id: buttonHover; enabled: button.enabled; cursorShape: Qt.PointingHandCursor }
-    TapHandler { enabled: button.enabled; onTapped: button.clicked() }
+    text: label
+    foreground: danger ? root.urgent : root.foreground
+    accent: root.accent
+    fontFamily: root.fontFamily
+    fontSize: root.fontSize(Style.font.caption)
+    Layout.maximumWidth: Math.max(1, root.width - root.space(56))
   }
 }

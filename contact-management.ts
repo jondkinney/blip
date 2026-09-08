@@ -44,6 +44,12 @@ export interface IdentityCandidate {
   cards: IdentitySourceCard[];
 }
 
+/** A single named person needs no identity decision, even across sources.
+ * This selects a read-only comparison; it never authorizes a mutation. */
+export function initialContactToken(candidates: IdentityCandidate[]): string {
+  return candidates.length === 1 ? candidates[0]!.token : "";
+}
+
 export interface IdentitySourceCard {
   token: string;
   accountNumber: number;
@@ -1230,6 +1236,7 @@ async function main(): Promise<void> {
       emit({
         ok: true,
         handle: result.handle,
+        initialToken: initialContactToken(result.candidates ?? []),
         ambiguous: (result.candidates?.length ?? 0) > 1,
         candidates: result.candidates ?? [],
       });

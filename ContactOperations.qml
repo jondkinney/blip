@@ -16,6 +16,8 @@ Item {
   readonly property string helperPath:
     decodeURIComponent(Qt.resolvedUrl("contact-management.ts").toString().replace(/^file:\/\//, ""))
 
+  property string initialToken: ""
+  signal initialContactReady(string token)
   property var candidates: []
   property var audit: null
   property var repairPreview: null
@@ -399,13 +401,14 @@ Item {
     // A click that lands during the tiny local-file refresh window must not
     // be lost. Finish that read, then begin the user-visible Mac lookup.
     if (worker.running) {
-      if (currentOperation === "read" && readSilently) {
+      if (currentOperation === "read") {
         pendingReviewHandle = requested
         return true
       }
       return false
     }
     activeHandle = requested
+    initialToken = ""
     candidates = []
     repairPreview = null
     comparison = null
@@ -476,6 +479,7 @@ Item {
   function dismissReview() {
     if (worker.running) return false
     activeHandle = ""
+    initialToken = ""
     candidates = []
     repairPreview = null
     comparison = null
@@ -736,6 +740,8 @@ Item {
       if (totalCards > 64) { error = "Identity helper returned too many contact cards"; return }
       activeHandle = handle
       candidates = options
+      initialToken = validToken(result.initialToken) && options.length === 1
+        && options[0].token === result.initialToken ? result.initialToken : ""
       notice = options.length === 0
         ? "No matching contact cards were found"
         : options.length === 1 ? "Contacts has one matching name" : "Contacts has conflicting names"
@@ -964,6 +970,12 @@ Item {
         root.refreshCandidatesAfterExit = false
         var active = root.activeHandle
         if (active !== "") Qt.callLater(function() { root.findCandidates(active) })
+        return
+      }
+      if (root.initialToken !== "" && root.error === "") {
+        var token = root.initialToken
+        root.initialToken = ""
+        Qt.callLater(function() { root.initialContactReady(token) })
         return
       }
       if (root.reloadAfterExit) {

@@ -17,8 +17,10 @@ FocusScope {
   signal closed()
   signal contactsMutated()
   function review(handle) {
-    if (operations.loading) return
-    if (operations.findCandidates(handle)) { opened = true; forceActiveFocus() }
+    if (opened) return operations.activeHandle === handle
+    if (!operations.findCandidates(handle)) return false
+    opened = true; forceActiveFocus()
+    return true
   }
   function close() { if (!operations.loading) { opened = false; operations.dismissReview(); closed() } }
   Keys.onEscapePressed: close()
@@ -26,6 +28,7 @@ FocusScope {
     id: operations
     objectName: "blipContactOperations"
     onContactsMutated: root.contactsMutated()
+    onInitialContactReady: function(token) { if (root.opened) management.selectCandidate(management.candidateForToken(token)) }
   }
   ColumnLayout {
     anchors.fill: parent
@@ -33,7 +36,7 @@ FocusScope {
     RowLayout {
       Layout.fillWidth: true
       PanelActionButton {
-        iconText: "←"; tooltipText: "Back to contact review"
+        iconText: "←"; tooltipText: "Back"; focusable: true
         enabled: !operations.loading
         foreground: root.foreground; hoverColor: root.accent
         onClicked: root.close()
@@ -44,7 +47,10 @@ FocusScope {
         color: root.foreground; font.family: root.fontFamily
         font.pixelSize: Math.round(Style.font.body * root.fontScale)
       }
-      QQC.Button {
+      ContactButton {
+        foreground: root.foreground; accent: root.accent
+        fontFamily: root.fontFamily
+        fontSize: Math.round(Style.font.bodySmall * root.fontScale)
         text: "Copy vCard"; enabled: !operations.loading
         onClicked: operations.copyVCard(operations.activeHandle)
       }

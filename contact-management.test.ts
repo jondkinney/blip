@@ -547,3 +547,13 @@ describe("contact workspace CLI", () => {
     expect(JSON.parse(result.stdout).error).toContain("too large");
   });
 });
+
+
+test("initial contact view skips only an unambiguous person, never writes", async () => {
+  const { initialContactToken } = await import("./contact-management");
+  const candidate = { token, name: "Sample Contact", recordCount: 2, sourceCount: 2,
+    hasPhoto: false, cards: [] };
+  expect(initialContactToken([])).toBe("");
+  expect(initialContactToken([candidate])).toBe(token);
+  expect(initialContactToken([candidate, { ...candidate, token: "sha256:" + "b".repeat(64) }])).toBe("");
+});

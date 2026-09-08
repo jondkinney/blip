@@ -57,9 +57,9 @@ ColumnLayout {
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
       }
 
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
-        visible: root.macReviewExpanded
+        visible: root.macReviewExpanded && (!root.resolver || root.resolver.comparison === null)
         spacing: root.space(8)
         SectionHeading { label: "MANAGE MAC CONTACTS" }
         SmallButton {
@@ -71,20 +71,12 @@ ColumnLayout {
           enabled: root.resolver && !root.resolver.loading
           onClicked: root.resolver.findCandidates(root.resolver.activeHandle)
         }
-        SmallButton {
-          visible: !root.resolver || root.resolver.comparison === null
-          label: "Back to contact review"
-          enabled: root.resolver && !root.resolver.loading
-          onClicked: {
-            if (root.resolver.comparison) root.resolver.cancelComparison()
-            root.closeRequested()
-          }
-        }
+
       }
 
       Text {
         Layout.fillWidth: true
-        visible: root.macReviewExpanded
+        visible: root.macReviewExpanded && (!root.resolver || root.resolver.comparison === null)
         text: root.resolver && root.resolver.candidates.length > 1
           ? root.resolver.candidates.length + " different people are named for this " + root.handleNoun() + " in Contacts. Pick who this conversation belongs to — from there you can merge the cards or remove the " + root.handleNoun() + " from the wrong one."
           : root.selectedCandidate && root.selectedCandidate.recordCount > 1
@@ -106,13 +98,13 @@ ColumnLayout {
       Text {
         Layout.fillWidth: true
         visible: root.resolver && root.resolver.candidates.length > 0 && root.selectedCandidate === null
-        text: "Pick a person below. That only opens their cards for review — it is temporary, never saved, and changes nothing in Contacts."
+        text: "Choose a person to review their cards."
         textFormat: Text.PlainText
         wrapMode: Text.WordWrap
-        color: root.urgent
+        color: Qt.darker(root.foreground, 1.35)
         font.family: root.fontFamily
         font.pixelSize: root.fontSize(Style.font.caption)
-        font.bold: true
+        font.bold: false
       }
 
       Repeater {
@@ -144,7 +136,7 @@ ColumnLayout {
             anchors.fill: parent
             anchors.margins: root.space(8)
             spacing: root.space(6)
-            RowLayout {
+            ColumnLayout {
               Layout.fillWidth: true
               spacing: root.space(8)
               Text {
@@ -173,7 +165,7 @@ ColumnLayout {
                   root.resolver.activeHandle, root.selectedToken, sourceCandidate.modelData.token)
               }
               SmallButton {
-                label: !sourceCandidate.intended ? "Work on this person…"
+                label: !sourceCandidate.intended ? "Review cards…"
                   : root.resolver && root.resolver.comparison
                   && root.resolver.comparison.ownerToken === sourceCandidate.modelData.token
                   ? "Contact workspace open"
@@ -203,7 +195,7 @@ ColumnLayout {
                 ? "You’re reviewing this person’s cards temporarily — nothing is saved as a Blip name, and every Mac Contacts change asks for its own confirmation."
                 : root.selectedCandidate
                   ? "A different person? Remove just this " + root.handleNoun() + " from their card. The same person under another name (a married-name change, say)? Merge the cards — you can adjust the surviving name during the review."
-                  : "Opens their cards for review — from there you can edit them, merge duplicates, or remove this " + root.handleNoun() + " from the wrong card."
+                  : "Review, edit, merge cards, or remove this " + root.handleNoun() + " from the wrong card."
               textFormat: Text.PlainText
               wrapMode: Text.WordWrap
               color: Qt.darker(root.foreground, 1.4)
@@ -212,7 +204,7 @@ ColumnLayout {
             }
             Repeater {
               model: sourceCandidate.cardsExpanded ? sourceCandidate.modelData.cards : []
-              delegate: RowLayout {
+              delegate: ColumnLayout {
                 id: sourceCard
                 required property var modelData
                 required property int index
@@ -326,7 +318,7 @@ ColumnLayout {
             font.pixelSize: root.fontSize(Style.font.caption)
             font.bold: true
           }
-          RowLayout {
+          ColumnLayout {
             Layout.fillWidth: true
             spacing: root.space(8)
             Item { Layout.fillWidth: true }
@@ -361,7 +353,7 @@ ColumnLayout {
         color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
         border.width: 1
         border.color: root.accent
-        RowLayout {
+        ColumnLayout {
           id: undoContents
           anchors.fill: parent
           anchors.margins: root.space(9)
@@ -474,7 +466,7 @@ ColumnLayout {
         font.family: root.fontFamily
         font.pixelSize: root.fontSize(Style.font.caption)
       }
-      RowLayout {
+      ColumnLayout {
         Layout.fillWidth: true
         Item { Layout.fillWidth: true }
         SmallButton {
@@ -512,37 +504,15 @@ ColumnLayout {
     font.bold: true
   }
 
-  component SmallButton: Rectangle {
-    id: button
+  component SmallButton: ContactButton {
     property string label: ""
     property bool danger: false
     property bool primary: false
-    signal clicked()
-    implicitWidth: buttonText.implicitWidth + root.space(16)
-    implicitHeight: buttonText.implicitHeight + root.space(10)
-    radius: root.corner(root.space(7))
-    opacity: enabled ? 1.0 : 0.45
-    color: buttonHover.hovered
-      ? Qt.rgba((danger ? root.urgent : root.accent).r,
-                (danger ? root.urgent : root.accent).g,
-                (danger ? root.urgent : root.accent).b, 0.18)
-      : primary ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
-      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.055)
-    border.width: 1
-    border.color: danger ? root.urgent : primary ? root.accent
-      : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
-    Text {
-      id: buttonText
-      anchors.centerIn: parent
-      text: button.label
-      textFormat: Text.PlainText
-      color: button.danger ? root.urgent : root.foreground
-      font.family: root.fontFamily
-      font.pixelSize: root.fontSize(Style.font.caption)
-      font.bold: button.primary
-    }
-    HoverHandler { id: buttonHover; enabled: button.enabled; cursorShape: Qt.PointingHandCursor }
-    TapHandler { enabled: button.enabled; onTapped: button.clicked() }
+    text: label
+    foreground: danger ? root.urgent : root.foreground
+    accent: root.accent
+    fontFamily: root.fontFamily
+    fontSize: root.fontSize(Style.font.caption)
+    Layout.maximumWidth: Math.max(1, root.width - root.space(56))
   }
-
 }

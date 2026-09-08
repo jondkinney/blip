@@ -1755,7 +1755,7 @@ FocusScope {
   // press past the last row landing at the top reads as a jump, not a loop
   // (Omarchy's Dropdown clamps the same way).
   function moveCursor(dy) {
-    if (contactReview.opened || !listShowing || threads.length === 0 || dy === 0) return
+    if (contactsOpen || !listShowing || threads.length === 0 || dy === 0) return
     // Up from the first row hands focus to the search field above the list,
     // and Down in an empty field hands it back (Omarchy's SearchableDropdown).
     if (dy < 0 && cursor <= 0) { startSearch(); return }
@@ -3421,6 +3421,13 @@ FocusScope {
     }
   }
 
+  // Contact work owns the full detached surface. Refuse replacing an open
+  // workspace so another menubar click cannot discard an editor or preview.
+  function openContactManagement(handle) {
+    if (!root.splitView) return false
+    return contactWorkspace.review(handle)
+  }
+
   property var contactContext: null
   Menu {
     id: contactMenu
@@ -3440,7 +3447,12 @@ FocusScope {
     fontFamily: root.fontFamily
     fontSize: root.fontBodySmall
     onClosed: root.focusDefault()
-    onManageRequested: function(handle) { contactWorkspace.review(handle) }
+    detached: root.splitView
+    onManageRequested: function(handle) {
+      if (root.splitView) root.openContactManagement(handle)
+      else if (!root.hostWidget || !root.hostWidget.manageContact(handle))
+        contactReview.notice = "Finish the contact already open in the Blip window first."
+    }
   }
   ContactWorkspace {
     id: contactWorkspace

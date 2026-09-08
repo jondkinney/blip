@@ -527,7 +527,12 @@ helper; the optional availability check needs Automation → Contacts on the Mac
 
 ## Contact management (draft)
 
-From Contact review, choose **Manage contact…** to compare, edit, consolidate,
+Quick review stays in the menubar. Management uses the resizable window; one
+matching person opens directly to their cards, while conflicting matches ask
+you to choose. A single card shows its details without comparison controls.
+
+From Contact review, choose **Manage contact ↗** to open the selected contact
+in the detached Blip window and compare, edit, consolidate,
 delete, or link matching source cards. Selecting a person is temporary.
 **Copy vCard** exports a contact file for pasting into a conversation.
 

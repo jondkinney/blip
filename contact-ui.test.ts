@@ -11,8 +11,8 @@ const contactEditor = readFileSync(new URL("./ContactCardEditor.qml", import.met
     // the conflict flow speaks in outcomes, not implementation terms: picking
     // a person opens their cards; "session"/identities.json stay out of it
     expect(identitySettings).toContain('"WORKING ON: "');
-    expect(identitySettings).toContain("Work on this person");
-    expect(identitySettings).toContain("Pick a person below. That only opens their cards for review");
+    expect(identitySettings).toContain("Review cards");
+    expect(identitySettings).toContain("Choose a person to review their cards.");
     expect(identitySettings).not.toContain("Select for this session");
     expect(identitySettings).not.toContain("SELECTED FOR THIS SESSION");
     expect(identitySettings).toContain('label: "Remove from Mac Contacts"');
@@ -32,8 +32,8 @@ const contactEditor = readFileSync(new URL("./ContactCardEditor.qml", import.met
     expect(contactCompare).toContain('title: "Consolidate into one card"');
     expect(contactCompare).toContain('title: "Or link cards · optional"');
     expect(contactCompare).not.toContain("step: \"");
-    expect(contactCompare).toContain("Reload cards from Mac");
-    expect(contactCompare).toContain("Back to contact tasks");
+    expect(contactCompare).toContain("Reload cards");
+    expect(contactCompare).toContain("Choose another person");
     expect(contactCompare).toContain("DIFFERENCES ONLY");
     expect(contactCompare).toContain("sharedRowMap");
     expect(contactCompare).toContain("MERGED PREVIEW");
@@ -44,7 +44,7 @@ const contactEditor = readFileSync(new URL("./ContactCardEditor.qml", import.met
     expect(contactCompare).toContain("Prepare link in Contacts…");
     expect(contactCompare).toContain("CONFIRM AN UPSTREAM CONTACTS CHANGE");
     expect(contactCompare).toContain("Checking makes no changes");
-    expect(contactCompare).toContain("Edit in Blip…");
+    expect(contactCompare).toContain("Edit contact…");
     expect(contactCompare).toContain("cardBox.modelData.sourceName");
     expect(identitySettings).toContain("sourceCard.modelData.sourceName");
     expect(contactCompare).toContain("Text.PlainText");
@@ -169,4 +169,36 @@ describe("consolidation draft dedupe (executed from QML source)", () => {
     // call to merge.
     expect(kept.map((entry) => entry.value)).toEqual(["(555) 010-4477", "+15550104477"]);
   });
+});
+
+test("contact handoff creates the window once before selecting the contact", () => {
+  const source = readFileSync(new URL("./BarWidget.qml", import.meta.url), "utf8");
+  const loader: any = { item: null };
+  const events: string[] = [];
+  const showApp = () => {
+    events.push("show");
+    loader.item = { manageContact: (handle: string) => { events.push(handle); return true; } };
+  };
+  const handoff = new Function("showApp", "windowLoader",
+    extractQmlFunction(source, "manageContact") + "; return manageContact;")(showApp, loader);
+  expect(handoff("+15551234567")).toBe(true);
+  expect(events).toEqual(["show", "+15551234567"]);
+});
+
+test("an existing contact editor survives a handoff for another person", () => {
+  const source = readFileSync(new URL("./ContactWorkspace.qml", import.meta.url), "utf8");
+  const operations = { activeHandle: "+15551234567", findCandidates: () => { throw new Error("must retain editor"); } };
+  const review = new Function("operations", "opened", "forceActiveFocus",
+    extractQmlFunction(source, "review") + "; return review;")(operations, true, () => {});
+  expect(review("+15551234567")).toBe(true);
+  expect(review("+15551234568")).toBe(false);
+});
+
+test("a first-window handoff queues behind the initial access check", () => {
+  const state = new Function("worker", "currentOperation", "safeText",
+    'let pendingReviewHandle = ""; ' + extractQmlFunction(identities, "findCandidates")
+      + '; return { request: findCandidates, queued: () => pendingReviewHandle };')(
+    { running: true }, "read", (s: string) => s);
+  expect(state.request("+15551234567")).toBe(true);
+  expect(state.queued()).toBe("+15551234567");
 });
