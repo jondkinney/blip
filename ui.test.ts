@@ -419,7 +419,8 @@ describe("QML safety invariants", () => {
     expect(back).toContain("threadFlick.contentY = 0");
     expect(back.indexOf("threadFlick.contentY = 0")).toBeLessThan(back.indexOf("scrollCursorIntoView()"));
     // Down in an empty field starts from the first row; Esc keeps the old cursor.
-    expect(panel.split('if (text === "") root.listFromTop()').length - 1).toBe(2);
+    expect(panel.split('if (text === "") root.listFromTop()').length - 1).toBe(1);
+    expect(panel).toContain('if (text === "" && root.newRecipients.length === 0) root.listFromTop()');
     expect(qmlFunction("listFromTop")).toContain("cursor = 0");
   });
 

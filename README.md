@@ -81,8 +81,8 @@ people who showed up with pull requests. What is in it now:
   send by Ctrl+V / drag-and-drop / `/attach`, with captions.
 - **SMS and RCS** send on their own service instead of failing as iMessage,
   and short-code senders (banks, utilities, 2FA) open like any other thread.
-- **Search** conversations by name, then messages; **new conversation** from a
-  contact search; **reply from a toast**; failed-delivery flags.
+- **Search** conversations by name, then messages; **new conversation** with one
+  or more contacts; **reply from a toast**; failed-delivery flags.
 - **One source.** The Mac-side tools ship in this repo; `blip-setup` installs
   everything including a dedicated ssh key the Mac confines to the six
   bridge tools.
@@ -920,6 +920,20 @@ the full `any;+;<id>`. A group's `handle` field is whichever member spoke last
 — send to *that* and you DM one person while the panel shows the group.
 `imsg groups` supplies the real GUID; a group whose GUID isn't cached yet is
 read-only rather than guessed.
+
+**Start a new group with `+`.** Search for a person, select their address, then
+search again to add more people. Remove a recipient with the × on their chip.
+Choose **Start conversation** when everyone is selected, then send the first
+message. Selecting just one person opens a direct conversation.
+
+The first group message uses the Mac's native Messages compose window and
+requires the Mac to be unlocked with Accessibility permission granted. It
+verifies every selected address before sending, preserves existing compose
+drafts, and restores the previously focused app. Attachments become available
+after the first text message creates the group. Subsequent messages use its
+confirmed GUID. If a send cannot be confirmed, Blip keeps the failed bubble
+and asks you to check Messages before retrying; it never resends automatically.
+Update the Mac bridge along with Blip to enable this feature.
 
 **The self-thread lies.** A message you send yourself lands twice: once
 `from_me=true`, once `from_me=false`, same timestamp and text. Every counter and

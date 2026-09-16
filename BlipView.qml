@@ -2,6 +2,7 @@ import "SendState.mjs" as SendState
 import "MessageActions.mjs" as MessageActions
 import "SourceId.mjs" as SourceId
 import "TapbackActions.mjs" as TapbackActions
+import "NewConversation.mjs" as NewConversation
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -136,6 +137,11 @@ FocusScope {
     decodeURIComponent(Qt.resolvedUrl("contact-search.ts").toString().replace(/^file:\/\//, ""))
 
   // ---- new-conversation state (`n` opens, Esc closes)
+  property var newRecipients: []
+  property bool groupSendBusy: false
+  property bool groupSendUncertain: false
+  readonly property string groupSendScript:
+    decodeURIComponent(Qt.resolvedUrl("send-group.ts").toString().replace(/^file:\/\//, ""))
   property bool newMode: false
   property var newResults: []
   property string newNote: ""
@@ -536,6 +542,7 @@ FocusScope {
    */
   function isSendable(t) {
     if (!t) return false
+    if (NewConversation.isDraftChat(t.chat)) return true
     var c = String(t.chat || "")
     if (isGroupId(c)) return /^[A-Za-z]+;[+-];.+$/.test(String(t.guid || ""))
     return /^\+?[0-9]{3,15}$/.test(c) || c.indexOf("@") > 0
@@ -579,6 +586,7 @@ FocusScope {
     searchNote = ""
     searchField.text = ""
     newMode = false
+    newRecipients = []
     newResults = []
     newNote = ""
     newField.text = ""
@@ -637,6 +645,7 @@ FocusScope {
   /** The one gate for "this thread was looked at": a surface that marks read,
    *  and not a thread merely peeked. */
   function markRead(chat, seen, act) {
+    if (NewConversation.isDraftChat(chat)) return
     if (hostWidget && readActive && !peeking) hostWidget.markThreadRead(chat, seen, act)
   }
   function showThread(t) {
@@ -659,10 +668,14 @@ FocusScope {
     composeField.text = drafts[String(t.chat)] || ""   // this conversation's unsent text
     composeField.cursorPosition = composeField.length
     clearAttachments()   // a queued file must never survive into another thread
-    requestThreadLoad(String(t.chat))
+    if (NewConversation.isDraftChat(t.chat)) {
+      loading = false
+      note = "Send the first message to create this group"
+    } else requestThreadLoad(String(t.chat))
   }
 
   function requestThreadLoad(chat) {
+    if (NewConversation.isDraftChat(chat)) return
     pendingThreadChat = String(chat || "")
     if (!threadProc.running) startNextThreadLoad()
   }
@@ -1220,6 +1233,10 @@ FocusScope {
 
   /** Queue one more file on the draft. The same path twice is one attachment. */
   function addAttachment(path) {
+    if (root.inThread && NewConversation.isDraftChat(root.active.chat)) {
+      root.note = "Send the first message before adding attachments"
+      return
+    }
     var p = String(path || "")
     if (p === "") return
     for (var i = 0; i < root.attachDrafts.length; i++) if (root.attachDrafts[i].path === p) return
@@ -1270,6 +1287,7 @@ FocusScope {
     exitSearch()
     threadFlick.contentY = 0   // the field sits above the rows
     newMode = true
+    newRecipients = []
     newResults = []
     newNote = ""
     newCursor = 0
@@ -1290,6 +1308,7 @@ FocusScope {
   }
   function exitNew() {
     newMode = false
+    newRecipients = []
     newResults = []
     newNote = ""
     newCursor = 0
@@ -1362,9 +1381,10 @@ FocusScope {
     var q = newFieldQuery()
     if (q !== "" && q === newQueryRan && newResults.length > 0) {
       var i = Math.max(0, Math.min(newCursor, newResults.length - 1))
-      openContact(newResults[i])
+      addNewRecipient(newResults[i])
       return
     }
+    if (q === "" && newRecipients.length > 0) { startSelectedConversation(); return }
     runContactSearch()
   }
   function moveNewCursor(dy) {
@@ -1374,6 +1394,32 @@ FocusScope {
     if (dy < 0 && newCursor <= 0) { threadFlick.contentY = 0; return }
     newCursor = Math.max(0, Math.min(newResults.length - 1, newCursor + dy))
     scrollCursorIntoView()
+  }
+
+  function addNewRecipient(hit) {
+    var result = NewConversation.addRecipient(newRecipients, hit)
+    newRecipients = result.recipients
+    if (result.error !== "") { newNote = result.error; return }
+    newField.text = ""
+    newResults = []
+    newQueryRan = ""
+    newNote = ""
+    contactSeq++
+    newField.forceActiveFocus()
+  }
+  function removeNewRecipient(handle) {
+    newRecipients = NewConversation.removeRecipient(newRecipients, handle)
+    newField.forceActiveFocus()
+  }
+  function startSelectedConversation() {
+    if (newRecipients.length === 0 || newFieldQuery() !== "") return
+    var selected = newRecipients
+    if (selected.length === 1) { exitNew(); openContact(selected[0]); return }
+    var draft = NewConversation.groupDraft(selected, String(Date.now()))
+    if (!draft) { newNote = "Choose valid recipients"; return }
+    exitNew()
+    groupSendUncertain = false
+    openThread(draft)
   }
 
   /** Start (or resume) a DM with a picked handle. An existing thread is
@@ -1601,6 +1647,10 @@ FocusScope {
     // "/attach <path>" queues a file from anywhere on this machine as the draft.
     var trimmed = text.trim()
     if (trimmed.indexOf("/attach ") === 0) {
+      if (NewConversation.isDraftChat(root.active.chat)) {
+        note = "Send the first message before adding attachments"
+        return
+      }
       var p = trimmed.slice(8).trim()
       if (p.indexOf("~/") === 0) p = root.home + p.slice(1)
       addAttachment(p)
@@ -1616,6 +1666,8 @@ FocusScope {
       note = "Read-only — group id unknown — send from your phone"
       return
     }
+
+    if (NewConversation.isDraftChat(root.active.chat)) { sendNewGroup(trimmed); return }
 
     if (root.attachCount > 0) {
       if (sendProc.running || fileSendProc.running) {
@@ -1655,6 +1707,72 @@ FocusScope {
     note = ""
     root.sendQueue = root.sendQueue.concat([{ chat: chat, text: text, stamp: stamp, localId: localId, target: target }])
     pumpSend()
+  }
+
+  function sendNewGroup(text) {
+    if (groupSendBusy) { note = "Creating group…"; return }
+    if (groupSendUncertain) { note = "Check Messages on the Mac before trying again"; return }
+    var chat = String(active.chat)
+    var stamp = wireStamp()
+    var localId = String(++nextSendId)
+    groupSendProc.job = { thread: active, text: text, stamp: stamp, localId: localId }
+    groupSendProc.result = null
+    pendingRevision++
+    pendingSends = pendingSends.concat([{ chat: chat, text: text, ts: stamp, localId: localId }])
+    bubbles = appendPendingBubble(bubbles, text, stamp, localId)
+    pinToBottom = true
+    composeField.text = ""
+    note = "Creating group…"
+    groupSendBusy = true
+    groupSendProc.command = ["bun", groupSendScript]
+    groupSendProc.stdinEnabled = true
+    groupSendProc.running = true
+    groupSendProc.write(JSON.stringify({ recipients: active.recipients.map(function(p) { return p.handle }), text: text }))
+    groupSendProc.stdinEnabled = false
+  }
+
+  Process {
+    id: groupSendProc
+    property var job: null
+    property var result: null
+    stdout: StdioCollector {
+      onStreamFinished: {
+        if (text.length > 4096) return
+        try { groupSendProc.result = JSON.parse(text) } catch (_) {}
+      }
+    }
+    onExited: function(code, status) {
+      var job = groupSendProc.job
+      var result = groupSendProc.result
+      groupSendProc.job = null
+      groupSendProc.result = null
+      root.groupSendBusy = false
+      if (!job) return
+      var chat = String(job.thread.chat)
+      var belongsHere = root.inThread && String(root.active.chat) === chat
+      var created = code === 0 && status === 0 ? NewConversation.createdGroup(result) : null
+      if (created) {
+        root.pendingRevision++
+        root.pendingSends = NewConversation.remapPending(root.pendingSends, chat, created.chat)
+        if (root.drafts[chat]) { root.drafts[created.chat] = root.drafts[chat]; delete root.drafts[chat] }
+        if (belongsHere) {
+          root.active = Object.assign({}, job.thread, created, { recipients: undefined })
+          root.note = ""
+          root.requestThreadLoad(created.chat)
+        }
+        if (root.hostWidget) root.hostWidget.refresh(true, false)
+      } else {
+        var reason = result && typeof result.error === "string" ? result.error.substring(0, 240)
+          : "Send not confirmed. Check Messages on the Mac before trying again."
+        root.failPending(chat, job.localId, reason, job.text, job.stamp)
+        if (belongsHere) {
+          root.groupSendUncertain = !result || result.uncertain !== false
+          root.note = reason
+          if (!root.groupSendUncertain && composeField.text === "") composeField.text = job.text
+        }
+      }
+      if (belongsHere) composeField.forceActiveFocus()
+    }
   }
 
   /** Now in the bridge's WIRE format (UTC ISO-8601): the pending bubble's ts.
@@ -2632,6 +2750,49 @@ FocusScope {
             // behind a key nobody presses is a search that does not exist
             // (Fred: "I don't see search"). Click it or press `/`.
             // ---------------------------------------- NEW CONVERSATION
+            Flow {
+              Layout.fillWidth: true
+              visible: root.newMode && root.newRecipients.length > 0
+              spacing: Style.space(6)
+              Repeater {
+                model: root.newRecipients
+                delegate: ContactButton {
+                  required property var modelData
+                  width: Math.min(implicitWidth, parent.width)
+                  text: modelData.name + "  ×"
+                  Accessible.name: "Remove " + modelData.name + ", " + modelData.handle
+                  ToolTip.text: modelData.handle
+                  ToolTip.visible: hovered
+                  ToolTip.delay: 600
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: root.fontBodySmall
+                  onClicked: root.removeNewRecipient(modelData.handle)
+                }
+              }
+            }
+            RowLayout {
+              Layout.fillWidth: true
+              visible: root.newMode && root.newRecipients.length > 0
+              Text {
+                Layout.fillWidth: true
+                text: "Add more people or start the conversation"
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                font.family: root.fontFamily
+                font.pixelSize: root.fontCaption
+                color: root.dim
+              }
+              ContactButton {
+                text: "Start conversation"
+                enabled: root.newFieldQuery() === ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: root.fontBodySmall
+                onClicked: root.startSelectedConversation()
+              }
+            }
+
             TextField {
               id: newField
               Layout.fillWidth: true
@@ -2645,8 +2806,8 @@ FocusScope {
               Keys.onEscapePressed: root.exitNew()
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Down) {
-                  if (text === "") root.listFromTop()
-                  else root.moveNewCursor(1)
+                  if (text === "" && root.newRecipients.length === 0) root.listFromTop()
+                  else if (text !== "") root.moveNewCursor(1)
                   event.accepted = true
                 }
                 else if (event.key === Qt.Key_Up) { root.moveNewCursor(-1); event.accepted = true }
@@ -2684,7 +2845,7 @@ FocusScope {
                   ? root.hoverFill
                   : "transparent"
                 HoverHandler { id: contactHover }
-                TapHandler { onTapped: root.openContact(modelData) }
+                TapHandler { onTapped: root.addNewRecipient(modelData) }
                 RowLayout {
                   id: contactRow
                   anchors.left: parent.left
