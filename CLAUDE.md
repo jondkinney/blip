@@ -63,6 +63,11 @@ what it is handed. Keep it that way.
   the GUID from the new outbound row, exact body, and full participant set;
   ambiguity is a failure, never a guess. Pending sends move to the confirmed
   chat in memory. An uncertain send is never automatically retried.
+  Before opening the native composer, look for one existing live group whose
+  complete recipient set matches. An addresses deep link can reopen that
+  group without a To field, so reuse its verified GUID through the normal
+  AppleScript send instead. Multiple matching groups require explicit list
+  selection; never guess among them or use an old service row's recipients.
 - **Two read marks.** `watermark` = what the collector has seen (drives toasts).
   `readMark` / `readMarks[chat]` = what the user has looked at (drives the badge
   and the blue dots). Collapsing them makes the badge flash and reset.

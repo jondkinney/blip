@@ -51,13 +51,14 @@ def compose_url(handles):
     return "imessage:open?" + urlencode({"addresses": ",".join(handles)})
 
 
-def run_script(source, deadline=150):
+def run_script(source, deadline=150, language="JavaScript"):
     """Drain both pipes with independent caps; never expose script errors.
 
     JXA errors can quote the source, which contains the body. Only structured
     fixed errors and the content-free send-attempt marker leave this module.
     """
-    proc = subprocess.Popen(["/usr/bin/osascript", "-l", "JavaScript", "-"],
+    assert language in ("JavaScript", "AppleScript")
+    proc = subprocess.Popen(["/usr/bin/osascript", "-l", language, "-"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output, errors = bytearray(), bytearray()
     end = time.monotonic() + deadline
@@ -132,7 +133,9 @@ function find(node, wanted, depth) {
 function control(wanted) {
     for (var attempt = 0; attempt < 4; attempt++) {
         visits = 0;
-        try { return find(process.windows()[0], wanted, 0); }
+        var windows = process.windows();
+        if (!windows.length) throw new Error("noWindow");
+        try { return find(windows[0], wanted, 0); }
         catch (problem) { if (attempt === 3) throw problem; delay(0.2); }
     }
 }
@@ -156,7 +159,7 @@ function matches(labels, handle) {
 }
 function verifyRecipientsOnce() {
     var field = control("recipients");
-    if (!field) throw new Error("recipients");
+    if (!field) throw new Error("missingRecipients");
     var tokens = field.popUpButtons();
     if (tokens.length !== request.recipients.length) throw new Error("recipients");
     var found = {};
@@ -170,7 +173,7 @@ function verifyRecipientsOnce() {
 function verifyRecipients() {
     for (var attempt = 0; attempt < 8; attempt++) {
         try { verifyRecipientsOnce(); return; }
-        catch (problem) { if (attempt === 7) throw problem; delay(0.25); }
+        catch (problem) { if (problem.message === "noWindow" || attempt === 7) throw problem; delay(0.25); }
     }
 }
 function checkDraft() {
@@ -190,7 +193,8 @@ function main() {
         delay(0.4);
         verifyRecipients();
         var body = control("body");
-        if (!body || String(body.value() || "").length) return {ok:false, error:"Messages has a draft. Clear or send it on the Mac first.", uncertain:false};
+        if (!body) return {ok:false, error:"The Mac message input is not available. Open Messages and try again.", uncertain:false};
+        if (String(body.value() || "").length) return {ok:false, error:"Messages has a draft. Clear or send it on the Mac first.", uncertain:false};
         if (request.prepareOnly) return {ok:true, prepared:true};
         body.value = request.text;
         body.attributes.byName("AXFocused").value = true;
@@ -201,8 +205,13 @@ function main() {
         attempted = true;
         events.keyCode(36);
         return {ok:true, submitted:true};
-    } catch (_) {
-        return {ok:false, error:"Could not verify the recipients and compose field in Messages.", uncertain:attempted};
+    } catch (problem) {
+        var error = problem.message === "noWindow"
+            ? "Unlock the Mac and open Messages, then try again. No accessible Messages window was found."
+            : problem.message === "missingRecipients"
+                ? "Messages opened a conversation without recipient controls. Open the matching group from Blip's list."
+                : "Could not verify the recipients and compose field in Messages.";
+        return {ok:false, error:error, uncertain:attempted};
     }
 }
 JSON.stringify(main());
@@ -216,6 +225,50 @@ def ui_source(request, prepare_only=False):
 
 def last_message_id(con):
     return con.execute("SELECT COALESCE(MAX(ROWID),0) FROM message").fetchone()[0]
+
+
+def existing_group(con, handles):
+    """Find one live group with the exact recipients, using metadata only.
+
+    An addresses deep link may reopen an existing group, which has no To
+    field to inspect. Resolve its GUID before opening the compose UI instead.
+    Multiple groups with the same members need an explicit list selection.
+    """
+    placeholders = ",".join("?" for _ in handles)
+    rows = con.execute(f"""SELECT c.guid, c.chat_identifier
+        FROM chat c
+        WHERE c.style=43 AND length(c.guid)<=100 AND length(c.chat_identifier)<=64
+          AND c.ROWID=(SELECT live.ROWID FROM chat live
+              WHERE live.chat_identifier=c.chat_identifier
+              ORDER BY (SELECT MAX(m.date) FROM chat_message_join j
+                        JOIN message m ON m.ROWID=j.message_id WHERE j.chat_id=live.ROWID) DESC,
+                       live.ROWID DESC LIMIT 1)
+          AND EXISTS (SELECT 1 FROM chat_message_join j WHERE j.chat_id=c.ROWID)
+          AND (SELECT COUNT(DISTINCT lower(h.id)) FROM chat_handle_join j
+               JOIN handle h ON h.ROWID=j.handle_id WHERE j.chat_id=c.ROWID)=?
+          AND NOT EXISTS (SELECT 1 FROM chat_handle_join j
+               JOIN handle h ON h.ROWID=j.handle_id
+               WHERE j.chat_id=c.ROWID AND (h.id IS NULL OR lower(h.id) NOT IN ({placeholders})))
+        LIMIT 2""", (len(handles), *handles)).fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        return {"ok": False, "uncertain": False,
+                "error": "Several groups have these recipients. Open the one you want from Blip's conversation list."}
+    guid, chat = rows[0]
+    if not re.fullmatch(r"(?:iMessage|SMS|RCS|any);\+;(?:chat[0-9]{1,40}|[a-fA-F0-9]{32})", guid) or guid.split(";+;", 1)[1] != chat:
+        return {"ok": False, "uncertain": False,
+                "error": "The existing group's address is unavailable. Open it from Blip's conversation list."}
+    return {"ok": True, "guid": guid, "chat": chat}
+
+
+def existing_send_source(guid, text):
+    sender = tool_module("imsg-send")
+    # Reuse the established GUID send, with the same bounded process reader as
+    # new-group automation. Errors cannot echo a message body back to Linux.
+    return ('log "BLIP_GROUP_SEND_ATTEMPT"\n'
+            + sender.applescript_send_chat(guid, text)
+            + 'return "{\\"ok\\":true,\\"submitted\\":true}"\n')
 
 
 def find_created_group(con, baseline, handles, text, decode_body=lambda blob: None):
@@ -258,16 +311,24 @@ def send_group(request, prepare_only=False):
         try:
             con = sqlite3.connect("file:" + CHAT_DB + "?mode=ro", uri=True, timeout=5)
             try:
-                preflight = run_script(ui_source(request, True).replace("JSON.stringify(main());", "JSON.stringify(checkDraft());"))
-                if not preflight.get("ok"):
-                    return preflight
+                existing = existing_group(con, request["recipients"])
+                if existing and not existing.get("ok"):
+                    return existing
                 baseline = last_message_id(con)
-                opened = subprocess.run(["/usr/bin/open", compose_url(request["recipients"])],
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-                if opened.returncode:
-                    return {"ok": False, "error": "Could not open Messages on the Mac", "uncertain": False}
-                time.sleep(2)
-                result = run_script(ui_source(request, prepare_only))
+                if existing:
+                    if prepare_only:
+                        return {"ok": True, "prepared": True, "reused": True}
+                    result = run_script(existing_send_source(existing["guid"], request["text"]), language="AppleScript")
+                else:
+                    preflight = run_script(ui_source(request, True).replace("JSON.stringify(main());", "JSON.stringify(checkDraft());"))
+                    if not preflight.get("ok"):
+                        return preflight
+                    opened = subprocess.run(["/usr/bin/open", compose_url(request["recipients"])],
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                    if opened.returncode:
+                        return {"ok": False, "error": "Could not open Messages on the Mac", "uncertain": False}
+                    time.sleep(2)
+                    result = run_script(ui_source(request, prepare_only))
                 if not result.get("ok") or prepare_only:
                     return result
                 for _ in range(40):

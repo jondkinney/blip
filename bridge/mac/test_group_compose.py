@@ -3,7 +3,8 @@ import json
 import io
 import os
 import runpy
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stdout, redirect_stderr, nullcontext
+from types import SimpleNamespace
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -36,7 +37,7 @@ class GroupTests(unittest.TestCase):
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
         con.executescript('''CREATE TABLE chat (guid TEXT, chat_identifier TEXT, style INTEGER);
-          CREATE TABLE message (is_from_me INTEGER, text TEXT, attributedBody BLOB, error INTEGER);
+          CREATE TABLE message (is_from_me INTEGER, text TEXT, attributedBody BLOB, error INTEGER, date INTEGER);
           CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
           CREATE TABLE handle (id TEXT);
           CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);''')
@@ -44,11 +45,61 @@ class GroupTests(unittest.TestCase):
 
     def add_chat(self, con, chat, people, text="Synthetic fixture", mine=1):
         c = con.execute("INSERT INTO chat VALUES (?,?,43)", ("iMessage;+;" + chat, chat)).lastrowid
-        m = con.execute("INSERT INTO message VALUES (?,?,NULL,0)", (mine, text)).lastrowid
+        m = con.execute("INSERT INTO message VALUES (?,?,NULL,0,0)", (mine, text)).lastrowid
+        con.execute("UPDATE message SET date=? WHERE ROWID=?", (m, m))
         con.execute("INSERT INTO chat_message_join VALUES (?,?)", (c, m))
         for person in people:
             h = con.execute("INSERT INTO handle VALUES (?)", (person,)).lastrowid
             con.execute("INSERT INTO chat_handle_join VALUES (?,?)", (c, h))
+        return c, m
+
+    def test_existing_group_requires_exact_recipients(self):
+        con = self.db()
+        people = self.request["recipients"]
+        self.add_chat(con, "chat1", people[:1])
+        self.add_chat(con, "chat2", people + ["other@example.com"])
+        self.assertIsNone(group.existing_group(con, people))
+        self.add_chat(con, "chat3", list(reversed([p.upper() for p in people])))
+        self.assertEqual(group.existing_group(con, people),
+                         {"ok": True, "guid": "iMessage;+;chat3", "chat": "chat3"})
+        self.add_chat(con, "chat4", people)
+        self.assertFalse(group.existing_group(con, people)["ok"])
+
+    def test_existing_group_uses_live_service_row_and_current_participants(self):
+        con = self.db()
+        people = self.request["recipients"]
+        self.add_chat(con, "chat1", people)
+        ghost = con.execute("INSERT INTO chat VALUES ('SMS;+;chat1','chat1',43)").lastrowid
+        con.execute("INSERT INTO chat_handle_join SELECT ?,handle_id FROM chat_handle_join WHERE chat_id=1", (ghost,))
+        self.assertEqual(group.existing_group(con, people)["guid"], "iMessage;+;chat1")
+        # An older service row's matching recipients cannot authorize a send
+        # when the live conversation has since gained another participant.
+        self.add_chat(con, "chat1", people + ["other@example.com"])
+        self.assertIsNone(group.existing_group(con, people))
+
+    def test_existing_group_never_enters_the_native_recipient_picker(self):
+        for prepare in [True, False]:
+            con = self.db()
+            self.add_chat(con, "chat1", self.request["recipients"])
+            expected = {"ok": True, "guid": "iMessage;+;chat1", "chat": "chat1"}
+            read = SimpleNamespace(messages_ui_lock=nullcontext, frontmost=lambda: "", restore_front=lambda previous: None)
+            sender = group.tool_module("imsg-send")
+            modules = {"imsg-read": read, "imsg": SimpleNamespace(decode_attributed_body=lambda blob: None), "imsg-send": sender}
+            with patch.object(group, "tool_module", side_effect=lambda name: modules[name]), \
+                 patch.object(group.sqlite3, "connect", return_value=con), \
+                 patch.object(group, "run_script", return_value={"ok": True, "submitted": True}) as run, \
+                 patch.object(group.subprocess, "run") as open_url, \
+                 patch.object(group, "find_created_group", return_value=expected):
+                result = group.send_group(self.request, prepare_only=prepare)
+                open_url.assert_not_called()
+                if prepare:
+                    self.assertEqual(result, {"ok": True, "prepared": True, "reused": True})
+                    run.assert_not_called()
+                else:
+                    self.assertEqual(result, expected)
+                    run.assert_called_once()
+                    self.assertEqual(run.call_args.kwargs, {"language": "AppleScript"})
+                    self.assertIn('to chat id "iMessage;+;chat1"', run.call_args.args[0])
 
     def test_only_new_outbound_exact_body_and_recipients_resolve_a_group(self):
         con = self.db()
@@ -69,7 +120,7 @@ class GroupTests(unittest.TestCase):
         con = self.db()
         people = self.request["recipients"]
         self.add_chat(con, "chat1", people)
-        m = con.execute("INSERT INTO message VALUES (1,?,NULL,0)", (self.request["text"],)).lastrowid
+        m = con.execute("INSERT INTO message VALUES (1,?,NULL,0,2)", (self.request["text"],)).lastrowid
         con.execute("INSERT INTO chat_message_join VALUES (1,?)", (m,))
         self.assertTrue(group.find_created_group(con, 0, people, self.request["text"])["ok"])
         con.execute("UPDATE message SET error=1 WHERE ROWID=?", (m,))
@@ -99,7 +150,9 @@ class GroupTests(unittest.TestCase):
             return original([sys.executable, "-c", "import sys;sys.stdin.buffer.read();print('{\"ok\":true,\"prepared\":true}')"], **kwargs)
         with patch.object(group.subprocess, "Popen", side_effect=launch):
             self.assertEqual(group.run_script(group.ui_source(self.request, True)), {"ok": True, "prepared": True})
-        self.assertEqual(seen, [["/usr/bin/osascript", "-l", "JavaScript", "-"]])
+            self.assertEqual(group.run_script(group.existing_send_source("iMessage;+;chat1", self.request["text"]), language="AppleScript"), {"ok": True, "prepared": True})
+        self.assertEqual(seen, [["/usr/bin/osascript", "-l", "JavaScript", "-"],
+                                ["/usr/bin/osascript", "-l", "AppleScript", "-"]])
 
     def test_oversized_stream_is_killed_without_waiting_for_exit(self):
         original = subprocess.Popen

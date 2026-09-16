@@ -50,7 +50,7 @@ function uiFixture(labels:string[], bodyValue="", focused=true, prepareOnly=true
   const events:any={processes:{byName:()=>process},keyCode:()=>{sent++;}};
   const app:any={activate:()=>{},running:()=>true};
   const api=new Function("Application","delay","request","console",js.replace("JSON.stringify(main());","return {matches,verifyRecipients,checkDraft,main};"))((name:string)=>name.includes("systemevents")?events:app,()=>{}, {...request,prepareOnly}, {log:()=>{}});
-  return {...api, sent:()=>sent};
+  return {...api, sent:()=>sent, closeWindow:()=>{process.windows=()=>[];}};
 }
 test("native compose refuses wrong or collapsed recipients", () => {
   expect(uiFixture(["Alice alice@example.com","Bob bob@example.com"]).main()).toEqual({ok:true,prepared:true});
@@ -75,4 +75,10 @@ test("native send rechecks recipients and focus after filling the draft", () => 
   expect(unfocused.main().ok).toBe(false); expect(unfocused.sent()).toBe(0);
   const changed=uiFixture(request.recipients,"",true,false,["alice@example.com","other@example.com"]);
   expect(changed.main()).toMatchObject({ok:false,uncertain:false}); expect(changed.sent()).toBe(0);
+});
+test("an inaccessible Mac window asks the user to unlock without attempting a send", () => {
+  const ui=uiFixture(request.recipients,"",true,false);
+  ui.closeWindow();
+  expect(ui.main()).toMatchObject({ok:false,uncertain:false,error:expect.stringContaining("Unlock the Mac")});
+  expect(ui.sent()).toBe(0);
 });
