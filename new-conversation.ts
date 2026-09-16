@@ -1,0 +1,33 @@
+// Recipient selection stays local until the user starts a conversation.
+// bun build new-conversation.ts --target browser --format esm --outfile NewConversation.mjs
+export interface Recipient { name: string; handle: string; kind?: string }
+export const MAX_RECIPIENTS = 31;
+const unsafe = /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/;
+
+export function recipient(value: unknown): Recipient | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.handle !== "string" || raw.handle.length > 254 || unsafe.test(raw.handle)) return null;
+  const handle = raw.handle.trim().toLowerCase();
+  if (!/^\+?[0-9]{3,15}$/.test(handle) && !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(handle)) return null;
+  const name = typeof raw.name === "string" ? raw.name.slice(0, 160).replace(new RegExp(unsafe.source, "g"), " ").trim() : "";
+  return { handle, name: name || handle };
+}
+
+export function addRecipient(selected: Recipient[], hit: unknown): { recipients: Recipient[]; error: string } {
+  const clean = recipient(hit);
+  if (!clean) return { recipients: selected, error: "Choose a valid phone number or email address" };
+  if (selected.some(p => p.handle.toLowerCase() === clean.handle))
+    return { recipients: selected, error: "Already added" };
+  if (selected.length >= MAX_RECIPIENTS)
+    return { recipients: selected, error: `Choose at most ${MAX_RECIPIENTS} recipients` };
+  return { recipients: selected.concat([clean]), error: "" };
+}
+
+export function removeRecipient(selected: Recipient[], handle: string): Recipient[] {
+  return selected.filter(p => p.handle !== handle);
+}
+
+export function conversationTitle(selected: Recipient[]): string {
+  return selected.map(p => p.name).join(" & ");
+}
