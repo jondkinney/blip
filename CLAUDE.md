@@ -55,6 +55,14 @@ what it is handed. Keep it that way.
   `--chat-id <full guid>` (`any;+;<32hex>`, or `<Service>;+;chat<digits>` on
   Macs that keep one chat row per service — `imsg groups` returns ONE row per
   identifier, the newest, so an empty shell never wins; #8), DMs send `--to <chat>`.
+  A new multi-recipient draft has no GUID yet. Only its first text message uses
+  `send-group.ts` → `imsg-send --new-group-stdin --yes` → `group_compose.py`.
+  Recipients and body cross bounded stdin; the native Messages composer must
+  expose exactly the requested addresses before Return is pressed. This shares
+  the read-push UI lock and never falls back to a participant handle. Resolve
+  the GUID from the new outbound row, exact body, and full participant set;
+  ambiguity is a failure, never a guess. Pending sends move to the confirmed
+  chat in memory. An uncertain send is never automatically retried.
 - **Two read marks.** `watermark` = what the collector has seen (drives toasts).
   `readMark` / `readMarks[chat]` = what the user has looked at (drives the badge
   and the blue dots). Collapsing them makes the badge flash and reset.

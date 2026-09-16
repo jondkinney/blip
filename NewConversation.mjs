@@ -29,9 +29,49 @@ function removeRecipient(selected, handle) {
 function conversationTitle(selected) {
   return selected.map((p) => p.name).join(" & ");
 }
+function isDraftChat(chat) {
+  return typeof chat === "string" && /^new-group:[0-9-]{1,60}$/.test(chat);
+}
+function groupDraft(selected, nonce) {
+  const people = selected.map(recipient);
+  if (!isDraftChat(`new-group:${nonce}`) || people.length < 2 || people.length > MAX_RECIPIENTS || people.some((p) => !p) || new Set(people.map((p) => p.handle)).size !== people.length)
+    return null;
+  return {
+    chat: `new-group:${nonce}`,
+    guid: "",
+    handle: "",
+    name: conversationTitle(selected),
+    recipients: people,
+    participants: people,
+    service: "iMessage",
+    last_ts: "",
+    last_text: "",
+    last_from_me: false,
+    count: 0,
+    unread: 0
+  };
+}
+function createdGroup(value) {
+  if (!value || typeof value !== "object")
+    return null;
+  const d = value;
+  if (d.ok !== true || typeof d.guid !== "string" || d.guid.length > 100)
+    return null;
+  const parts = /^(iMessage|SMS|RCS|any);\+;(chat[0-9]{1,40}|[0-9a-fA-F]{32})$/.exec(d.guid);
+  if (!parts || d.chat !== parts[2])
+    return null;
+  return { chat: parts[2], guid: d.guid, service: parts[1] === "any" ? "iMessage" : parts[1] };
+}
+function remapPending(pending, draftChat, chat) {
+  return pending.map((p) => p.chat === draftChat ? Object.assign({}, p, { chat }) : p);
+}
 export {
   removeRecipient,
+  remapPending,
   recipient,
+  isDraftChat,
+  groupDraft,
+  createdGroup,
   conversationTitle,
   addRecipient,
   MAX_RECIPIENTS

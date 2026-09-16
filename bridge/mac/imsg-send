@@ -10,6 +10,7 @@ imsg-send: send an iMessage / SMS / RCS via Messages.app (AppleScript bridge).
 Usage:
   imsg-send --to <handle> [--service iMessage|SMS|RCS] [--yes] <text>...
   imsg-send --chat-id <chat-guid> [--yes] <text>...
+  imsg-send --new-group-stdin --yes                    # JSON recipients + text
   imsg-send --self [--yes] <text>...                 # send to your own iMessage
   imsg-send --list-services
   imsg-send --list-self                              # show auto-detected self handles
@@ -444,6 +445,7 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    p.add_argument("--new-group-stdin", action="store_true", help="First group message: bounded JSON recipients and text on stdin")
     p.add_argument("--to", help="Recipient handle (phone or email)")
     p.add_argument("--chat-id", help="Existing chat GUID (alternative to --to)")
     p.add_argument("--self", action="store_true",
@@ -474,6 +476,28 @@ def main() -> None:
                         "caption, the rest is the file")
     p.add_argument("text", nargs="*", help="Message body (joined with spaces)")
     args = p.parse_args()
+
+    if args.new_group_stdin:
+        import json
+        from group_compose import request_from_bytes, send_group, MAX_REQUEST
+        if (not args.yes or args.to or args.chat_id or args.self or args.file_stdin
+                or args.file_bytes or args.name != "file" or args.service != "iMessage"
+                or args.text_stdin or args.text_stdin_bytes or args.text
+                or args.list_services or args.list_self):
+            p.error("--new-group-stdin requires --yes and cannot combine with other send modes")
+        try:
+            request = request_from_bytes(sys.stdin.buffer.read(MAX_REQUEST + 1))
+        except ValueError:
+            result = {"ok": False, "error": "Invalid new-group request", "uncertain": False}
+        else:
+            try:
+                result = send_group(request)
+            except Exception:
+                # Even a ValueError here could follow Return. Only request
+                # validation proves that no send was attempted.
+                result = {"ok": False, "error": "Could not create the group. Check Messages on the Mac before trying again.", "uncertain": True}
+        print(json.dumps(result))
+        sys.exit(0 if result.get("ok") else 1)
 
     if args.list_services:
         for s in list_services():

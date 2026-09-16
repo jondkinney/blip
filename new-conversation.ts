@@ -31,3 +31,29 @@ export function removeRecipient(selected: Recipient[], handle: string): Recipien
 export function conversationTitle(selected: Recipient[]): string {
   return selected.map(p => p.name).join(" & ");
 }
+
+export function isDraftChat(chat: unknown): boolean {
+  return typeof chat === "string" && /^new-group:[0-9-]{1,60}$/.test(chat);
+}
+
+export function groupDraft(selected: Recipient[], nonce: string) {
+  const people = selected.map(recipient);
+  if (!isDraftChat(`new-group:${nonce}`) || people.length < 2 || people.length > MAX_RECIPIENTS
+      || people.some(p => !p) || new Set(people.map(p => p!.handle)).size !== people.length) return null;
+  return { chat: `new-group:${nonce}`, guid: "", handle: "", name: conversationTitle(selected),
+    recipients: people, participants: people, service: "iMessage", last_ts: "", last_text: "",
+    last_from_me: false, count: 0, unread: 0 };
+}
+
+export function createdGroup(value: unknown): { chat: string; guid: string; service: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const d = value as Record<string, unknown>;
+  if (d.ok !== true || typeof d.guid !== "string" || d.guid.length > 100) return null;
+  const parts = /^(iMessage|SMS|RCS|any);\+;(chat[0-9]{1,40}|[0-9a-fA-F]{32})$/.exec(d.guid);
+  if (!parts || d.chat !== parts[2]) return null;
+  return { chat: parts[2], guid: d.guid, service: parts[1] === "any" ? "iMessage" : parts[1] };
+}
+
+export function remapPending<T extends { chat: string }>(pending: T[], draftChat: string, chat: string): T[] {
+  return pending.map(p => p.chat === draftChat ? Object.assign({}, p, { chat }) : p);
+}
