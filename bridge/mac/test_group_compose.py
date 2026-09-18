@@ -62,8 +62,26 @@ class GroupTests(unittest.TestCase):
         self.add_chat(con, "chat3", list(reversed([p.upper() for p in people])))
         self.assertEqual(group.existing_group(con, people),
                          {"ok": True, "guid": "iMessage;+;chat3", "chat": "chat3"})
-        self.add_chat(con, "chat4", people)
-        self.assertFalse(group.existing_group(con, people)["ok"])
+        # Even newer overlapping groups must not displace the exact match.
+        self.add_chat(con, "chat4", people + ["another@example.com"])
+        self.add_chat(con, "chat5", people[:1])
+        self.assertEqual(group.existing_group(con, people)["chat"], "chat3")
+
+    def test_existing_group_resumes_most_recent_exact_match(self):
+        con = self.db()
+        people = self.request["recipients"]
+        first, first_message = self.add_chat(con, "chat1", people)
+        _, second_message = self.add_chat(con, "chat2", people)
+        self.assertEqual(group.existing_group(con, people)["chat"], "chat2")
+        # Synced rows may arrive out of order. Message date, not chat/message
+        # insertion order, determines the most recently active conversation.
+        con.execute("UPDATE message SET date=100 WHERE ROWID=?", (first_message,))
+        self.assertEqual(group.existing_group(con, people)["chat"], "chat1")
+        # Timestamp ties prefer the latest message, then the latest chat row.
+        con.execute("UPDATE message SET date=100 WHERE ROWID=?", (second_message,))
+        self.assertEqual(group.existing_group(con, people)["chat"], "chat2")
+        con.execute("INSERT INTO chat_message_join VALUES (?,?)", (first, second_message))
+        self.assertEqual(group.existing_group(con, people)["chat"], "chat2")
 
     def test_existing_group_uses_live_service_row_and_current_participants(self):
         con = self.db()
@@ -81,7 +99,9 @@ class GroupTests(unittest.TestCase):
         for prepare in [True, False]:
             con = self.db()
             self.add_chat(con, "chat1", self.request["recipients"])
-            expected = {"ok": True, "guid": "iMessage;+;chat1", "chat": "chat1"}
+            self.add_chat(con, "chat2", self.request["recipients"])
+            self.add_chat(con, "chat3", self.request["recipients"] + ["other@example.com"])
+            expected = {"ok": True, "guid": "iMessage;+;chat2", "chat": "chat2"}
             read = SimpleNamespace(messages_ui_lock=nullcontext, frontmost=lambda: "", restore_front=lambda previous: None)
             sender = group.tool_module("imsg-send")
             modules = {"imsg-read": read, "imsg": SimpleNamespace(decode_attributed_body=lambda blob: None), "imsg-send": sender}
@@ -89,17 +109,46 @@ class GroupTests(unittest.TestCase):
                  patch.object(group.sqlite3, "connect", return_value=con), \
                  patch.object(group, "run_script", return_value={"ok": True, "submitted": True}) as run, \
                  patch.object(group.subprocess, "run") as open_url, \
-                 patch.object(group, "find_created_group", return_value=expected):
+                 patch.object(group, "find_created_group", return_value=expected) as confirm:
                 result = group.send_group(self.request, prepare_only=prepare)
                 open_url.assert_not_called()
                 if prepare:
                     self.assertEqual(result, {"ok": True, "prepared": True, "reused": True})
                     run.assert_not_called()
+                    confirm.assert_not_called()
                 else:
                     self.assertEqual(result, expected)
                     run.assert_called_once()
                     self.assertEqual(run.call_args.kwargs, {"language": "AppleScript"})
-                    self.assertIn('to chat id "iMessage;+;chat1"', run.call_args.args[0])
+                    self.assertIn('to chat id "iMessage;+;chat2"', run.call_args.args[0])
+                    confirm.assert_called_once()
+                    self.assertEqual(confirm.call_args.kwargs, {"expected_chat": "chat2"})
+
+    def test_reused_group_confirmation_ignores_other_exact_recipient_groups(self):
+        con = self.db()
+        people = self.request["recipients"]
+        self.add_chat(con, "chat1", people)
+        baseline = group.last_message_id(con)
+        # A concurrent send of the same body to another matching group must
+        # neither confirm our send nor redirect Blip to that other history.
+        self.add_chat(con, "chat2", people)
+        confirm = lambda: group.find_created_group(con, baseline, people, self.request["text"], expected_chat="chat1")
+        self.assertIsNone(confirm())
+        _, sent_message = self.add_chat(con, "chat1", people)
+        self.assertEqual(confirm(), {"ok": True, "guid": "iMessage;+;chat1", "chat": "chat1"})
+        con.execute("UPDATE message SET error=1 WHERE ROWID=?", (sent_message,))
+        self.assertTrue(confirm()["uncertain"])
+        self.assertFalse(confirm()["ok"])
+
+    def test_reused_group_can_confirm_a_service_transition(self):
+        con = self.db()
+        people = self.request["recipients"]
+        self.add_chat(con, "chat1", people)
+        baseline = group.last_message_id(con)
+        row, _ = self.add_chat(con, "chat1", people)
+        con.execute("UPDATE chat SET guid='RCS;+;chat1' WHERE ROWID=?", (row,))
+        self.assertEqual(group.find_created_group(con, baseline, people, self.request["text"], expected_chat="chat1"),
+                         {"ok": True, "guid": "RCS;+;chat1", "chat": "chat1"})
 
     def test_only_new_outbound_exact_body_and_recipients_resolve_a_group(self):
         con = self.db()

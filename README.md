@@ -925,8 +925,9 @@ read-only rather than guessed.
 search again to add more people. Remove a recipient with the × on their chip.
 Choose **Start conversation** when everyone is selected, then send the first
 message. Selecting just one person opens a direct conversation.
-If exactly one existing group has the same recipients, Blip resumes it. When
-several groups match, choose the intended group from the conversation list.
+If an existing group has exactly the same recipients, Blip sends there and
+opens that conversation. If several match, it resumes the most recently active
+one. Groups with additional people do not count as a match.
 
 The first group message uses the Mac's native Messages compose window and
 requires the Mac to be unlocked with Accessibility permission granted. It

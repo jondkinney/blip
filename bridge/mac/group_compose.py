@@ -228,11 +228,12 @@ def last_message_id(con):
 
 
 def existing_group(con, handles):
-    """Find one live group with the exact recipients, using metadata only.
+    """Find the most recently active exact-recipient group using metadata only.
 
     An addresses deep link may reopen an existing group, which has no To
     field to inspect. Resolve its GUID before opening the compose UI instead.
-    Multiple groups with the same members need an explicit list selection.
+    Distinct conversations with the same members resume the most recent one;
+    groups containing additional people are never candidates.
     """
     placeholders = ",".join("?" for _ in handles)
     rows = con.execute(f"""SELECT c.guid, c.chat_identifier
@@ -249,12 +250,13 @@ def existing_group(con, handles):
           AND NOT EXISTS (SELECT 1 FROM chat_handle_join j
                JOIN handle h ON h.ROWID=j.handle_id
                WHERE j.chat_id=c.ROWID AND (h.id IS NULL OR lower(h.id) NOT IN ({placeholders})))
-        LIMIT 2""", (len(handles), *handles)).fetchall()
+        ORDER BY (SELECT MAX(m.date) FROM chat_message_join j
+                  JOIN message m ON m.ROWID=j.message_id WHERE j.chat_id=c.ROWID) DESC,
+                 (SELECT MAX(j.message_id) FROM chat_message_join j WHERE j.chat_id=c.ROWID) DESC,
+                 c.ROWID DESC
+        LIMIT 1""", (len(handles), *handles)).fetchall()
     if not rows:
         return None
-    if len(rows) > 1:
-        return {"ok": False, "uncertain": False,
-                "error": "Several groups have these recipients. Open the one you want from Blip's conversation list."}
     guid, chat = rows[0]
     if not re.fullmatch(r"(?:iMessage|SMS|RCS|any);\+;(?:chat[0-9]{1,40}|[a-fA-F0-9]{32})", guid) or guid.split(";+;", 1)[1] != chat:
         return {"ok": False, "uncertain": False,
@@ -271,14 +273,21 @@ def existing_send_source(guid, text):
             + 'return "{\\"ok\\":true,\\"submitted\\":true}"\n')
 
 
-def find_created_group(con, baseline, handles, text, decode_body=lambda blob: None):
-    """Only new outbound metadata and exact participants can resolve the ID."""
+def find_created_group(con, baseline, handles, text, decode_body=lambda blob: None, expected_chat=None):
+    """Confirm a new outbound row with exact participants in the chosen chat.
+
+    A reused conversation is scoped by its identifier, including service
+    variants. A simultaneous send in another exact-recipient group cannot
+    confirm this send or redirect Blip to that other conversation.
+    """
     rows = con.execute("""SELECT c.ROWID, c.guid, c.chat_identifier,
         CASE WHEN length(m.text)<=16000 THEN m.text END,
         CASE WHEN length(m.attributedBody)<=65536 THEN m.attributedBody END, m.error
         FROM chat c JOIN chat_message_join j ON j.chat_id=c.ROWID
         JOIN message m ON m.ROWID=j.message_id
-        WHERE m.ROWID>? AND m.is_from_me=1 AND c.style=43 ORDER BY m.ROWID DESC LIMIT 32""", (baseline,)).fetchall()
+        WHERE m.ROWID>? AND m.is_from_me=1 AND c.style=43
+          AND (? IS NULL OR c.chat_identifier=?)
+        ORDER BY m.ROWID DESC LIMIT 32""", (baseline, expected_chat, expected_chat)).fetchall()
     wanted = set(handles)
     candidates = {}
     for rowid, guid, chat, plain, blob, error in rows:
@@ -332,7 +341,9 @@ def send_group(request, prepare_only=False):
                 if not result.get("ok") or prepare_only:
                     return result
                 for _ in range(40):
-                    group = find_created_group(con, baseline, request["recipients"], request["text"], imsg.decode_attributed_body)
+                    group = find_created_group(con, baseline, request["recipients"], request["text"],
+                                               imsg.decode_attributed_body,
+                                               expected_chat=existing["chat"] if existing else None)
                     if group:
                         return group
                     time.sleep(0.25)

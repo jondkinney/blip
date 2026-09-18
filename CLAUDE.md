@@ -60,14 +60,15 @@ what it is handed. Keep it that way.
   Recipients and body cross bounded stdin; the native Messages composer must
   expose exactly the requested addresses before Return is pressed. This shares
   the read-push UI lock and never falls back to a participant handle. Resolve
-  the GUID from the new outbound row, exact body, and full participant set;
-  ambiguity is a failure, never a guess. Pending sends move to the confirmed
+  a newly created GUID from the outbound row, exact body, and full participant
+  set; ambiguous creation is a failure. Pending sends move to the confirmed
   chat in memory. An uncertain send is never automatically retried.
-  Before opening the native composer, look for one existing live group whose
+  Before opening the native composer, look for an existing live group whose
   complete recipient set matches. An addresses deep link can reopen that
   group without a To field, so reuse its verified GUID through the normal
-  AppleScript send instead. Multiple matching groups require explicit list
-  selection; never guess among them or use an old service row's recipients.
+  AppleScript send instead. If several groups have exactly those recipients,
+  resume the most recently active one. Confirm the send only in that chat;
+  never include groups with extra members or use an old service row's recipients.
 - **Two read marks.** `watermark` = what the collector has seen (drives toasts).
   `readMark` / `readMarks[chat]` = what the user has looked at (drives the badge
   and the blue dots). Collapsing them makes the badge flash and reset.
