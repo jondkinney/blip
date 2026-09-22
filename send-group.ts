@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 /** First group message: bounded stdin in both directions, never a body in argv. */
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { readStdinBounded } from "./contact-review";
 import { recipient, MAX_RECIPIENTS, createdGroup } from "./new-conversation";
+import { bridgeFor } from "./shim-path";
 export const MAX_GROUP_REQUEST = 48 * 1024;
 export const MAX_GROUP_RESPONSE = 4096;
 export function groupRequest(value: unknown): { recipients: string[]; text: string } {
@@ -18,11 +17,13 @@ export function groupRequest(value: unknown): { recipients: string[]; text: stri
     throw new Error("Write a message of at most 4000 characters");
   return { recipients: handles as string[], text: d.text.trim() };
 }
-export function sendGroup(value: unknown, runner = spawnSync) {
+export function sendGroup(value: unknown, runner = spawnSync, home?: string) {
   const request = groupRequest(value);
   const input = JSON.stringify(request);
   if (Buffer.byteLength(input) > MAX_GROUP_REQUEST) throw new Error("Group request is too large");
-  const result = runner(join(process.env.HOME ?? homedir(), "bin", "imsg-send"), ["--new-group-stdin", "--yes"],
+  // There is no conversation ID until the Mac confirms the first send.
+  const bridge = bridgeFor("", "imsg-send", home);
+  const result = runner(bridge.cmd, [...bridge.args, "--new-group-stdin", "--yes"],
     { input, encoding: "utf8", timeout: 330000, maxBuffer: MAX_GROUP_RESPONSE });
   const fail = (error: string, uncertain = false) => ({ ok: false, error, uncertain });
   if (result.status === 69) return fail("Mac unreachable");

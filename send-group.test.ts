@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { groupRequest, sendGroup, MAX_GROUP_RESPONSE } from "./send-group";
 import { groupDraft, createdGroup, remapPending } from "./new-conversation";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 const people = [{name:"Alice",handle:"alice@example.com"},{name:"Bob",handle:"bob@example.com"}];
 const request = {recipients:people.map(p=>p.handle), text:"Synthetic fixture"};
 const success = {ok:true, chat:"chat123", guid:"iMessage;+;chat123"};
@@ -24,6 +26,20 @@ test("the first message and recipients travel on bounded stdin, not argv", () =>
     return {status:0,stdout:JSON.stringify(success)};
   };
   expect(sendGroup(request,run)).toEqual({...success,service:"iMessage"});
+});
+test("group creation honors the configured bridge directory", () => {
+  const home = mkdtempSync(join(tmpdir(), "blip-group-bin-"));
+  try {
+    mkdirSync(join(home, ".config", "blip"), { recursive: true });
+    writeFileSync(join(home, ".config", "blip", "bridge.conf"), "bin_dir=~/.local/bin\n");
+    const run: any = (file: string, args: string[], options: any) => {
+      expect(file).toBe(join(home, ".local", "bin", "imsg-send"));
+      expect(args).toEqual(["--new-group-stdin", "--yes"]);
+      expect(JSON.parse(options.input)).toEqual(request);
+      return { status: 0, stdout: JSON.stringify(success) };
+    };
+    expect(sendGroup(request, run, home)).toEqual({ ...success, service: "iMessage" });
+  } finally { rmSync(home, { recursive: true, force: true }); }
 });
 test("bad recipients and oversized bodies never reach the bridge", () => {
   for(const value of [null,{}, {...request,recipients:["a@example.com"]}, {...request,recipients:["a@example.com","A@example.com"]}, {...request,text:"a".repeat(4001)}])
